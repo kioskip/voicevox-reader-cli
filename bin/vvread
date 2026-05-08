@@ -1,0 +1,129 @@
+#!/bin/bash
+# bin/vvread - voiceClaude CLI entry point (R-004)
+#
+# 責務: subcommand dispatch のみ。実装は scripts/ 配下の各スクリプト
+# (voice.sh / 今後 vvread say 等)に委譲する。R-004 段階では voice.sh
+# 既存実装を壊さず exec で繋ぐ。R-005 以降で say / on-stop / synth /
+# play 等を順次統合する。
+#
+# 起動経路:
+#   - 直接実行: <repo>/bin/vvread
+#   - PATH 経由: ~/.local/bin/vvread → <repo>/bin/vvread への symlink 等
+# 後者で repo root を見失わないよう BASH_SOURCE を symlink 解決する。
+#
+# Bash 3.2 互換 + set -euo pipefail(entry script の方針、doc/08-bash-rules.md)。
+
+set -euo pipefail
+
+# ===== 自身の path を symlink chain ごと解決 =====
+# user が `ln -s <repo>/bin/vvread ~/.local/bin/vvread` 形式で入れる前提。
+# symlink → symlink → 実体 のチェーンも辿る。
+_vvread_source="${BASH_SOURCE[0]}"
+while [ -h "${_vvread_source}" ]; do
+  _vvread_dir="$(cd -P "$(dirname "${_vvread_source}")" && pwd)"
+  _vvread_source="$(readlink "${_vvread_source}")"
+  # symlink target が相対パスなら symlink の置き場所を基準に解決
+  case "${_vvread_source}" in
+    /*) ;;
+    *) _vvread_source="${_vvread_dir}/${_vvread_source}" ;;
+  esac
+done
+VVREAD_BIN_DIR="$(cd -P "$(dirname "${_vvread_source}")" && pwd)"
+VVREAD_PROJECT_DIR="$(cd "${VVREAD_BIN_DIR}/.." && pwd)"
+VVREAD_SCRIPTS_DIR="${VVREAD_PROJECT_DIR}/scripts"
+
+# 後段の subcommand が利用できるよう export する(R-005 以降で参照予定)
+export VVREAD_BIN_DIR VVREAD_PROJECT_DIR VVREAD_SCRIPTS_DIR
+
+# ===== usage =====
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: vvread <command> [args...]
+
+発話系:
+  say <text>                    テキストを合成して再生
+  synth <text> --output FILE    合成のみ。wav を FILE に書き出す
+  play <wav>                    既存 wav を再生
+  on-stop                       Claude Code Stop hook 用エントリ
+
+制御系:
+  stop                          再生中の音を即停止
+  mute <duration>               一定時間ミュート (例: 30s, 5m, 2h)
+  off                           永続オフ (`vvread on` まで)
+  on                            復帰
+  status                        現状表示
+  clean                         古い一時ファイルを削除
+
+管理系:
+  install [--scope SCOPE]       Claude Code hook 登録
+  uninstall [--scope SCOPE]     hook 登録解除
+  doctor [--offline]            ヘルスチェック
+  setup [--engine MODE]         対話セットアップ
+
+ヘルプ:
+  -h, --help, help              この usage を表示
+EOF
+}
+
+# ===== 未実装 stub =====
+# 該当 subcommand は将来の R タスクで実装する。本コミット時点では明示的に
+# 「未実装」を返す(silent fail させない、CI で発見できるように)。
+
+cmd_not_implemented() {
+  local cmd="$1"
+  local future="$2"
+  printf 'vvread %s: not yet implemented (%s)\n' "${cmd}" "${future}" >&2
+  return 2
+}
+
+# ===== dispatch =====
+
+if [ $# -eq 0 ]; then
+  usage
+  exit 1
+fi
+
+subcommand="$1"
+shift
+
+case "${subcommand}" in
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  # 制御系: 既存 voice.sh 実装に委譲(R-005+ で本体統合予定)
+  stop|mute|off|on|status|clean)
+    exec "${VVREAD_SCRIPTS_DIR}/voice.sh" "${subcommand}" "$@"
+    ;;
+  # 発話系
+  say)
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/say.sh" "$@"
+    ;;
+  synth)
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/synth.sh" "$@"
+    ;;
+  play)
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/play.sh" "$@"
+    ;;
+  on-stop)
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/on_stop.sh" "$@"
+    ;;
+  install)
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/install.sh" "$@"
+    ;;
+  uninstall)
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/uninstall.sh" "$@"
+    ;;
+  doctor)
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/doctor.sh" "$@"
+    ;;
+  setup)
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/setup.sh" "$@"
+    ;;
+  *)
+    printf 'vvread: unknown command: %s\n' "${subcommand}" >&2
+    printf 'Run `vvread --help` for usage.\n' >&2
+    exit 1
+    ;;
+esac

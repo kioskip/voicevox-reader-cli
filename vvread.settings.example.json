@@ -1,0 +1,90 @@
+{
+  // === VOICEVOX Engine connection ===
+  "voicevox": {
+    // VOICEVOX HTTP API endpoint.
+    // 127.0.0.1 (not localhost) avoids IPv6 stalls.
+    // Override with env: VOICEVOX_ENGINE_URL
+    "engineUrl": "http://127.0.0.1:50021",
+
+    // Speaker ID (numeric). List speakers with: vvread doctor
+    // Default: 3 (zundamon / normal)
+    // Override with env: VOICEVOX_SPEAKER
+    "speaker": 3,
+
+    // Speech rate multiplier (typical range 0.5 - 2.0).
+    // Default: 1.5
+    // Override with env: VOICEVOX_SPEED
+    "speed": 1.5,
+
+    // Pitch shift (typical range -0.15 to 0.15; negative = lower).
+    // Default: 0
+    // Override with env: VOICEVOX_PITCH
+    "pitch": 0,
+
+    // Intonation scale (0 = flat, 1.0 = neutral).
+    // Default: 1.0
+    // Override with env: VOICEVOX_INTONATION
+    "intonation": 1.0,
+
+    // Output volume (1.0 = neutral).
+    // Default: 1.0
+    // Override with env: VOICEVOX_VOLUME
+    "volume": 1.0,
+
+    // Pause-length scale (1.0 = neutral).
+    // Default: 1.0
+    // Override with env: VOICEVOX_PAUSE_SCALE
+    "pauseScale": 1.0,
+
+    // Silence (in seconds) inserted before speech.
+    // Default: 0
+    // Override with env: VOICEVOX_PRE_PHONEME
+    "prePhoneme": 0,
+
+    // Silence (in seconds) inserted after speech.
+    // Default: 0
+    // Override with env: VOICEVOX_POST_PHONEME
+    "postPhoneme": 0,
+
+    // Maximum input length (in characters). Excess is truncated and
+    // the suffix "(以下省略)" is appended to the spoken text.
+    // Default: 500
+    // Override with env: VOICEVOX_MAX_CHARS
+    "maxChars": 500
+  },
+
+  // === Logging ===
+  "log": {
+    // Log level: "OFF" / "INFO" / "DEBUG"
+    // Default: "INFO"
+    // Override with env: VOICEVOX_LOG_LEVEL
+    "level": "INFO",
+
+    // Maximum log size in bytes. Rotated to .1 on overflow.
+    // Set to 0 to disable rotation.
+    // Default: 10485760 (10 MiB)
+    // Override with env: VOICEVOX_LOG_MAX_BYTES
+    "maxBytes": 10485760
+  },
+
+  // === Notifications ===
+  "notify": {
+    // Minimum interval (seconds) between failure notifications.
+    // Default: 60
+    // Override with env: VOICEVOX_NOTIFY_COOLDOWN
+    "cooldownSec": 60
+  }
+
+  // === Path overrides (env-only, NOT settable here in v0.1) ===
+  // Path directories cannot be configured in this file. Use env vars:
+  //   VVREAD_STATE_DIR  - state files (session.id, playing.pid, mute_until, temp wav)
+  //   VVREAD_LOG_DIR    - speak.log
+  //   VVREAD_CACHE_DIR  - canned-phrase wav cache
+  // Defaults follow OS conventions:
+  //   macOS:     ~/Library/Application Support/vvread/  (state)
+  //              ~/Library/Logs/vvread/                  (log)
+  //              ~/Library/Caches/vvread/                (cache)
+  //   Linux/WSL: ${XDG_STATE_HOME:-~/.local/state}/vvread/         (state)
+  //              ${XDG_STATE_HOME:-~/.local/state}/vvread/logs/    (log)
+  //              ${XDG_CACHE_HOME:-~/.cache}/vvread/               (cache)
+}

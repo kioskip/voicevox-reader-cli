@@ -1,0 +1,432 @@
+"""scripts/settings.py のテスト (R-025)
+
+R-025 の最小実装範囲を網羅:
+- cascade priority(env > project > user > default)各レイヤー
+- JSONC line comment 対応 + string 内の `//` を保護
+- 不正 JSON / 型変換失敗 → parse_errors 蓄積 + default fallback
+- 不明キー → unknown_keys 蓄積、known キー解決は止まらない(forward compat)
+- dot path get + --with-origin JSON 出力
+- list --json 出力(values / unknown_keys / parse_errors / sources)
+- ファイル不在は parse_errors に上げない(normal 経路)
+
+注意: settings.load() は user_path / project_path 注入 + env 注入で
+完全に独立な世界を作れる設計。テスト中はその注入を使い、本物の
+~/Library/... は触らない。
+"""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "scripts"))
+
+import settings as settings_module  # noqa: E402
+
+SCRIPT = REPO / "scripts" / "settings.py"
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_paths(tmp_path: Path) -> tuple[Path, Path]:
+    """user / project の settings.json パスを返す(ファイルはまだ作らない)"""
+    user = tmp_path / "user" / "settings.json"
+    project = tmp_path / "proj" / "vvread.settings.json"
+    user.parent.mkdir(parents=True, exist_ok=True)
+    project.parent.mkdir(parents=True, exist_ok=True)
+    return user, project
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+
+
+def _load(tmp_path: Path, *, env=None, user_data=None, project_data=None,
+          user_text=None, project_text=None):
+    """テスト用 load() ラッパー。
+
+    *_data : dict を JSON 化して書く
+    *_text : 生テキストを直接書く(JSONC / 不正 JSON テスト用)
+    env    : OS env 完全注入(継承させない)
+    """
+    user_path, project_path = _make_paths(tmp_path)
+    if user_data is not None:
+        _write_json(user_path, user_data)
+    elif user_text is not None:
+        user_path.write_text(user_text, encoding="utf-8")
+    if project_data is not None:
+        _write_json(project_path, project_data)
+    elif project_text is not None:
+        project_path.write_text(project_text, encoding="utf-8")
+    return settings_module.load(
+        cwd=tmp_path,
+        env=env if env is not None else {},
+        user_path=user_path,
+        project_path=project_path,
+    )
+
+
+# ---------------------------------------------------------------------------
+# default 解決
+# ---------------------------------------------------------------------------
+
+
+class TestDefaults:
+    def test_all_schema_keys_resolve_to_defaults_when_no_inputs(self, tmp_path):
+        s = _load(tmp_path)
+        # SCHEMA の全キーが値を持ち、すべて origin=default
+        assert set(s.values.keys()) == set(settings_module.SCHEMA.keys())
+        for k, rv in s.values.items():
+            assert rv.origin.source == "default", (
+                f"{k} should be default, got {rv.origin.source}"
+            )
+
+    def test_engine_url_default_is_127_not_localhost(self, tmp_path):
+        """R-025 backlog 確定事項: localhost は IPv6 binding で詰まる事例があり
+        127.0.0.1 を default にする"""
+        s = _load(tmp_path)
+        assert s.get("voicevox.engineUrl").value == "http://127.0.0.1:50021"
+
+    def test_no_parse_errors_no_unknown_keys_no_sources(self, tmp_path):
+        s = _load(tmp_path)
+        assert s.parse_errors == []
+        assert s.unknown_keys == []
+        assert s.sources == []
+
+
+# ---------------------------------------------------------------------------
+# env override
+# ---------------------------------------------------------------------------
+
+
+class TestEnvOverride:
+    def test_env_overrides_default(self, tmp_path):
+        s = _load(tmp_path,
+                  env={"VOICEVOX_SPEAKER": "11"})
+        rv = s.get("voicevox.speaker")
+        assert rv.value == 11
+        assert rv.origin.source == "env"
+        assert rv.origin.detail == "VOICEVOX_SPEAKER"
+
+    def test_env_string_to_float(self, tmp_path):
+        s = _load(tmp_path, env={"VOICEVOX_SPEED": "1.7"})
+        rv = s.get("voicevox.speed")
+        assert rv.value == pytest.approx(1.7)
+        assert rv.origin.source == "env"
+
+    def test_env_overrides_project_and_user(self, tmp_path):
+        s = _load(
+            tmp_path,
+            env={"VOICEVOX_SPEAKER": "99"},
+            user_data={"voicevox": {"speaker": 1}},
+            project_data={"voicevox": {"speaker": 2}},
+        )
+        rv = s.get("voicevox.speaker")
+        assert rv.value == 99
+        assert rv.origin.source == "env"
+
+    def test_env_with_invalid_value_falls_back_with_parse_error(self, tmp_path):
+        s = _load(tmp_path,
+                  env={"VOICEVOX_SPEAKER": "not_an_int"})
+        # default に fallback
+        rv = s.get("voicevox.speaker")
+        assert rv.value == 3
+        assert rv.origin.source == "default"
+        # parse_errors に env 名が記録される
+        assert any("VOICEVOX_SPEAKER" == src for src, _ in s.parse_errors)
+
+
+# ---------------------------------------------------------------------------
+# project / user cascade
+# ---------------------------------------------------------------------------
+
+
+class TestProjectUserCascade:
+    def test_user_only_applied(self, tmp_path):
+        s = _load(tmp_path, user_data={"voicevox": {"speaker": 7}})
+        rv = s.get("voicevox.speaker")
+        assert rv.value == 7
+        assert rv.origin.source == "user"
+
+    def test_project_only_applied(self, tmp_path):
+        s = _load(tmp_path, project_data={"voicevox": {"speaker": 8}})
+        rv = s.get("voicevox.speaker")
+        assert rv.value == 8
+        assert rv.origin.source == "project"
+
+    def test_project_wins_over_user(self, tmp_path):
+        s = _load(
+            tmp_path,
+            user_data={"voicevox": {"speaker": 1}},
+            project_data={"voicevox": {"speaker": 2}},
+        )
+        rv = s.get("voicevox.speaker")
+        assert rv.value == 2
+        assert rv.origin.source == "project"
+
+    def test_partial_override_falls_back_per_key(self, tmp_path):
+        """user で speed のみ、project で speaker のみ設定 → 各々の出所が違う"""
+        s = _load(
+            tmp_path,
+            user_data={"voicevox": {"speed": 1.2}},
+            project_data={"voicevox": {"speaker": 5}},
+        )
+        assert s.get("voicevox.speed").origin.source == "user"
+        assert s.get("voicevox.speaker").origin.source == "project"
+        # それ以外は default
+        assert s.get("voicevox.pitch").origin.source == "default"
+
+    def test_sources_list_records_loaded_files(self, tmp_path):
+        s = _load(
+            tmp_path,
+            user_data={"voicevox": {"speaker": 1}},
+            project_data={"voicevox": {"speaker": 2}},
+        )
+        # 両ファイル絶対パスが sources に入る
+        user_path, project_path = _make_paths(tmp_path)
+        assert str(user_path) in s.sources
+        assert str(project_path) in s.sources
+
+
+# ---------------------------------------------------------------------------
+# JSONC
+# ---------------------------------------------------------------------------
+
+
+class TestJsonc:
+    def test_line_comment_at_start_of_line(self, tmp_path):
+        text = """{
+  // 速度を上げる
+  "voicevox": { "speed": 1.8 }
+}"""
+        s = _load(tmp_path, project_text=text)
+        assert s.get("voicevox.speed").value == pytest.approx(1.8)
+        assert s.get("voicevox.speed").origin.source == "project"
+        assert s.parse_errors == []
+
+    def test_trailing_line_comment(self, tmp_path):
+        text = """{
+  "voicevox": {
+    "speaker": 11  // 春日部つむぎ
+  }
+}"""
+        s = _load(tmp_path, project_text=text)
+        assert s.get("voicevox.speaker").value == 11
+        assert s.parse_errors == []
+
+    def test_double_slash_inside_string_preserved(self, tmp_path):
+        """文字列リテラル内の `//` はコメントと誤検出しない(URL 等)"""
+        text = """{
+  "voicevox": { "engineUrl": "http://127.0.0.1:50021" }
+  // 上記がデフォルト
+}"""
+        s = _load(tmp_path, project_text=text)
+        assert s.get("voicevox.engineUrl").value == "http://127.0.0.1:50021"
+        assert s.parse_errors == []
+
+    def test_escaped_quote_in_string(self, tmp_path):
+        """エスケープされた quote で string が早期終了しない"""
+        text = r'''{
+  "voicevox": { "engineUrl": "http://example.com/\"path\"//x" }
+}'''
+        s = _load(tmp_path, project_text=text)
+        # エスケープ quote 経由で string を抜けない → // は string 内なので保持
+        assert s.get("voicevox.engineUrl").value == 'http://example.com/"path"//x'
+
+
+# ---------------------------------------------------------------------------
+# 不正 JSON / 型不一致
+# ---------------------------------------------------------------------------
+
+
+class TestErrors:
+    def test_invalid_json_records_parse_error_and_keeps_defaults(self, tmp_path):
+        s = _load(tmp_path, project_text="{ not valid")
+        assert any("invalid JSON" in m for _, m in s.parse_errors)
+        # default は健在
+        assert s.get("voicevox.speaker").value == 3
+        assert s.get("voicevox.speaker").origin.source == "default"
+
+    def test_top_level_array_records_error(self, tmp_path):
+        s = _load(tmp_path, project_text="[1, 2, 3]")
+        assert any("top-level must be an object" in m
+                   for _, m in s.parse_errors)
+
+    def test_type_mismatch_falls_back_to_next_layer(self, tmp_path):
+        """project の値が型変換不能 → user に fallback、parse_errors に記録"""
+        s = _load(
+            tmp_path,
+            user_data={"voicevox": {"speaker": 5}},
+            project_data={"voicevox": {"speaker": "not_an_int"}},
+        )
+        # project が拒否され user が採用される
+        rv = s.get("voicevox.speaker")
+        assert rv.value == 5
+        assert rv.origin.source == "user"
+        # parse_errors に project の問題が記録
+        assert any("voicevox.speaker" in m for _, m in s.parse_errors)
+
+    def test_user_unreadable_file_silent_when_missing(self, tmp_path):
+        """ファイル不在は parse_errors には上げない"""
+        # user_path / project_path を完全 fresh(_load の helper を使わない)
+        user_path = tmp_path / "user_no.json"
+        project_path = tmp_path / "proj_no.json"
+        s = settings_module.load(
+            cwd=tmp_path, env={},
+            user_path=user_path, project_path=project_path,
+        )
+        assert s.parse_errors == []
+        assert s.sources == []
+
+    def test_int_type_does_not_accept_bool(self, tmp_path):
+        """target=int で value=True は int(True)=1 にしない"""
+        s = _load(tmp_path,
+                  project_data={"voicevox": {"speaker": True}})
+        rv = s.get("voicevox.speaker")
+        assert rv.value == 3  # default
+        assert rv.origin.source == "default"
+
+
+# ---------------------------------------------------------------------------
+# 不明キー(forward compat)
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownKeys:
+    def test_unknown_key_collected_known_keys_unaffected(self, tmp_path):
+        s = _load(
+            tmp_path,
+            project_data={
+                "voicevox": {"speaker": 5},
+                "future": {"newFeature": "x"},
+            },
+        )
+        # known キーは正常解決
+        assert s.get("voicevox.speaker").value == 5
+        assert s.get("voicevox.speaker").origin.source == "project"
+        # unknown_keys に future.newFeature が記録される
+        assert any(k == "future.newFeature" for _, k in s.unknown_keys)
+
+    def test_unknown_keys_from_both_files(self, tmp_path):
+        s = _load(
+            tmp_path,
+            user_data={"weird": {"a": 1}},
+            project_data={"weird": {"b": 2}},
+        )
+        keys = [k for _, k in s.unknown_keys]
+        assert "weird.a" in keys
+        assert "weird.b" in keys
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _run_cli(*args, env=None, cwd=None):
+    """settings.py を subprocess 起動。env は完全置換(VOICEVOX_*/VVREAD_* を継承させない)"""
+    base = {k: v for k, v in os.environ.items()
+            if not (k.startswith("VOICEVOX_") or k.startswith("VVREAD_"))}
+    if env:
+        base.update(env)
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        env=base,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+    )
+
+
+class TestCli:
+    def test_get_plain(self):
+        r = _run_cli("get", "voicevox.engineUrl")
+        assert r.returncode == 0
+        assert r.stdout.strip() == "http://127.0.0.1:50021"
+
+    def test_get_with_origin_json(self, tmp_path):
+        r = _run_cli("get", "voicevox.engineUrl", "--with-origin", cwd=str(tmp_path))
+        assert r.returncode == 0
+        payload = json.loads(r.stdout)
+        assert payload["value"] == "http://127.0.0.1:50021"
+        assert payload["origin"] == "default"
+        assert payload["detail"] is None
+
+    def test_get_env_overrides_default_via_cli(self):
+        r = _run_cli("get", "voicevox.speaker", "--with-origin",
+                     env={"VOICEVOX_SPEAKER": "8"})
+        assert r.returncode == 0
+        payload = json.loads(r.stdout)
+        assert payload["value"] == 8
+        assert payload["origin"] == "env"
+        assert payload["detail"] == "VOICEVOX_SPEAKER"
+
+    def test_get_unknown_key_exits_1(self):
+        r = _run_cli("get", "no.such.key")
+        assert r.returncode == 1
+        assert "unknown key" in r.stderr
+
+    def test_list_plain(self):
+        r = _run_cli("list")
+        assert r.returncode == 0
+        # 各 SCHEMA キーが列挙される
+        for key in settings_module.SCHEMA.keys():
+            assert key in r.stdout
+
+    def test_list_json(self, tmp_path):
+        r = _run_cli("list", "--json", cwd=str(tmp_path))
+        assert r.returncode == 0
+        payload = json.loads(r.stdout)
+        assert "values" in payload
+        assert "unknown_keys" in payload
+        assert "parse_errors" in payload
+        assert "sources" in payload
+        # 全 SCHEMA キーが values に含まれる
+        for key in settings_module.SCHEMA.keys():
+            assert key in payload["values"]
+            assert payload["values"][key]["origin"] == "default"
+
+
+class TestCliEnv:
+    def test_env_emits_all_schema_vars(self):
+        """env サブコマンドが SCHEMA の全 env_var を出力する"""
+        r = _run_cli("env")
+        assert r.returncode == 0
+        for key, (default, env_var, _) in settings_module.SCHEMA.items():
+            if env_var:
+                assert env_var in r.stdout, f"{env_var} not found in env output"
+
+    def test_env_uses_project_settings(self, tmp_path):
+        """cwd の vvread.settings.json が反映される"""
+        proj = tmp_path / "vvread.settings.json"
+        proj.write_text('{"voicevox": {"speaker": 77}}', encoding="utf-8")
+        r = _run_cli("env", cwd=str(tmp_path))
+        assert r.returncode == 0
+        assert "VOICEVOX_SPEAKER='77'" in r.stdout
+
+    def test_env_env_overrides_project(self, tmp_path):
+        """env 変数が project settings より優先される"""
+        proj = tmp_path / "vvread.settings.json"
+        proj.write_text('{"voicevox": {"speaker": 77}}', encoding="utf-8")
+        r = _run_cli("env", env={"VOICEVOX_SPEAKER": "99"}, cwd=str(tmp_path))
+        assert r.returncode == 0
+        assert "VOICEVOX_SPEAKER='99'" in r.stdout
+
+    def test_env_legacy_voicevox_engine_fallback(self):
+        """VOICEVOX_ENGINE (legacy) が VOICEVOX_ENGINE_URL として出力される (S-008)"""
+        r = _run_cli("env", env={"VOICEVOX_ENGINE": "http://192.168.1.1:50021"})
+        assert r.returncode == 0
+        assert "VOICEVOX_ENGINE_URL='http://192.168.1.1:50021'" in r.stdout
+
+    def test_env_output_is_eval_safe(self):
+        """shlex.quote で値がクォートされ eval できる"""
+        r = _run_cli("env", env={"VOICEVOX_ENGINE_URL": "http://127.0.0.1:50021"})
+        assert r.returncode == 0
+        assert "VOICEVOX_ENGINE_URL='http://127.0.0.1:50021'" in r.stdout

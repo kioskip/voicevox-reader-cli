@@ -1,0 +1,54 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Dates use ISO 8601 (YYYY-MM-DD).
+
+---
+
+## [Unreleased]
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+### Security
+
+---
+
+## [0.1.0] - 2026-05-07
+
+Initial public release.
+
+### Added
+
+- `vvread` CLI with subcommands: `say`, `synth`, `play`, `on-stop`, `install`, `uninstall`, `doctor`, `setup`, `status`, `stop`, `mute`, `off`, `on`, `clean`.
+- Cross-platform support: macOS (first-class), Linux (first-class), WSL (treated as Linux). Windows + Git Bash is best-effort (CLI only, playback unsupported).
+- VOICEVOX Engine connection modes: `existing` (default) and `docker`.
+- Playback abstraction layer: `afplay` on macOS; `paplay` > `pw-play` > `aplay` > `play` (sox) > `ffplay` on Linux/WSL.
+- OS-aware path resolver (`STATE_DIR` / `LOG_DIR` / `CACHE_DIR`) with env overrides (`VVREAD_STATE_DIR` / `VVREAD_LOG_DIR` / `VVREAD_CACHE_DIR`).
+- Settings cascade: CLI option > environment variable > project (`<cwd>/vvread.settings.json`) > user (`~/Library/Application Support/vvread/settings.json` on macOS, `${XDG_CONFIG_HOME:-~/.config}/vvread/settings.json` on Linux/WSL) > default. JSONC line comments are supported.
+- Claude Code Stop hook integration (`async: true`, `timeout: 600`) installable via `vvread install --scope {project|project-shared|user}`.
+- Text sanitization pipeline: number + counter normalization, kanji homonym disambiguation, bare hashes, bare paths, ASCII unit handling, English-to-katakana conversion (with `e2k` when present, falling back to `WORD_KANA` dictionary + character-by-character).
+- Wave cache for canned phrases (synthesis skipped on hit).
+- Prefetch architecture for chunk-based synthesis (next chunk synthesised while current chunk is playing).
+- Session-token preemption: a new response stops the previous response at the next chunk boundary.
+- Diagnostics via `vvread doctor` covering OS, runtime, dependencies, engine reachability, hook registration, and effective settings with origin (env / project / user / default).
+- Dependency catalog (`scripts/dependencies.py`) covering 16 entries across `runtime` / `setup` / `dev` / `publish` categories.
+- Bash 3.2 compatibility rules and a strict-mode + shellcheck convention documented in [`doc/08-bash-rules.md`](https://github.com/kioskip/voicevox-reader-cli/blob/main/doc/08-bash-rules.md), enforced by `scripts/dev/lint.sh`.
+- Pytest suite covering sanitize, cache key, settings cascade, dependency catalog, doctor, install/uninstall, and end-to-end command flows.
+
+### Documentation
+
+- English README ([`README.md`](README.md)) and Japanese mirror ([`README.ja.md`](README.ja.md)).
+- Detailed Japanese docs under [`doc/`](https://github.com/kioskip/voicevox-reader-cli/tree/main/doc): setup, text pipeline, configuration, observability, cache, voice CLI, workflow, bash rules, settings, dependencies.
+- Example settings file ([`vvread.settings.example.json`](vvread.settings.example.json)) covering every supported key with inline comments.
+
+### Notes
+
+- VOICEVOX Engine, VOICEVOX Core, and any voice libraries are **not bundled**. Users are responsible for installing them and complying with each library's terms of use.
+- Linux / WSL desktop notifications (`notify-send`) are not yet implemented — failure notifications are macOS-only in v0.1 (`terminal-notifier` > `osascript` fallback).

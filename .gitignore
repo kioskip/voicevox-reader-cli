@@ -1,0 +1,26 @@
+.DS_Store
+
+# 各ユーザーの環境変数(VOICEVOX_SPEED など)
+.env
+
+# e2k 用の Python venv(各環境で再構築する)
+.venv/
+
+# 音声ファイル・PID・on/off フラグ等の実行時データ
+tmp/
+
+# Python キャッシュ
+__pycache__/
+*.pyc
+
+# pytest キャッシュ
+.pytest_cache/
+
+# Claude Code のローカル設定上書き(個人ごとに変わる)
+.claude/settings.local.json
+
+# Claude Code の実行時 lock ファイル(scheduled_tasks 等)
+.claude/*.lock
+
+# vvread のユーザー設定(個人ごとに変わる、example.json をコピーして使う)
+vvread.settings.json
