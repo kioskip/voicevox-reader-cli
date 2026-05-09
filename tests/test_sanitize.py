@@ -7,11 +7,18 @@
 そのまま固定するので、辞書を意図的に変えた場合は同時にここも更新する。
 """
 import io
+import os
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
+import constants
 import sanitize
+
+REPO = Path(__file__).resolve().parent.parent
+SANITIZE_SCRIPT = REPO / "scripts" / "sanitize.py"
 
 
 # ---------- helper ----------
@@ -1106,3 +1113,38 @@ class TestMain:
         # 引数なしで stdin → stdout のシンプルな整形のみ。
         out = _run_main_with_input("テストです。", ["sanitize.py"])
         assert out == "テストです。"
+
+
+# ---------- MAX_CHARS 上限なし(R-037 + constants) ----------
+
+
+class TestMaxChars:
+    def test_constants_values(self):
+        assert constants.MAX_CHARS_DEFAULT == 500
+        assert constants.MAX_CHARS_LIMIT == 9999
+
+    def test_default_max_chars(self):
+        """デフォルト MAX_CHARS は MAX_CHARS_DEFAULT(500)"""
+        # 環境変数未設定時の動作: sanitize モジュールは既にインポート済みなので
+        # truncate() のデフォルト引数を通じて確認する
+        short = "あ" * 10
+        assert sanitize.truncate(short) == short
+
+    def test_truncate_at_limit(self):
+        text = "あ" * 600
+        result = sanitize.truncate(text, 500)
+        assert result == "あ" * 500 + "(以下省略)"
+
+    def test_max_chars_zero_resolves_to_limit(self):
+        """VOICEVOX_MAX_CHARS=0 → subprocess 内で MAX_CHARS が MAX_CHARS_LIMIT になる"""
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("VOICEVOX_")}
+        env["VOICEVOX_MAX_CHARS"] = "0"
+        r = subprocess.run(
+            [sys.executable, "-c", "import sanitize; print(sanitize.MAX_CHARS)"],
+            capture_output=True, text=True,
+            cwd=str(REPO / "scripts"),
+            env=env,
+        )
+        assert r.returncode == 0
+        assert r.stdout.strip() == str(constants.MAX_CHARS_LIMIT)

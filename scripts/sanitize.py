@@ -23,6 +23,15 @@ from kana_dict import (  # noqa: E402
     SYMBOL_KANA,
     WORD_KANA,
 )
+from constants import (  # noqa: E402
+    CHUNK_CHARS_DEFAULT,
+    CHUNK_HARD_MAX_DEFAULT,
+    FIRST_CHUNK_CHARS_DEFAULT,
+    INLINE_CODE_LIMIT_DEFAULT,
+    MAX_CHARS_DEFAULT,
+    MAX_CHARS_LIMIT,
+)
+
 
 def _env_int(name: str, default: int) -> int:
     try:
@@ -31,22 +40,23 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# 整形後テキストの最大文字数。超過分はカット
-MAX_CHARS = _env_int("VOICEVOX_MAX_CHARS", 500)
+# 整形後テキストの最大文字数。0 は「上限なし」として MAX_CHARS_LIMIT に読み替え
+_max_chars_raw = _env_int("VOICEVOX_MAX_CHARS", MAX_CHARS_DEFAULT)
+MAX_CHARS = MAX_CHARS_LIMIT if _max_chars_raw == 0 else _max_chars_raw
 
 # インラインコード入力長の上限。これを超えると詳細を読まず「コマンド」または
 # 「ファイル」(末尾が登録済み拡張子の場合)で代用する。辞書ヒットしないトークンが
 # per-char で展開されると暴走するための短縮読み上げ。
-INLINE_CODE_LENGTH_LIMIT = _env_int("VOICEVOX_INLINE_CODE_LIMIT", 25)
+INLINE_CODE_LENGTH_LIMIT = _env_int("VOICEVOX_INLINE_CODE_LIMIT", INLINE_CODE_LIMIT_DEFAULT)
 
 # 1 チャンクの目安文字数。これを超える場合は境界(改行→句点)で分割する
-CHUNK_CHARS = _env_int("VOICEVOX_CHUNK_CHARS", 200)
+CHUNK_CHARS = _env_int("VOICEVOX_CHUNK_CHARS", CHUNK_CHARS_DEFAULT)
 
 # 1 チャンクの強制上限。改行・句点が見つからない場合はここで強制分割する
-CHUNK_HARD_MAX = _env_int("VOICEVOX_CHUNK_HARD_MAX", 400)
+CHUNK_HARD_MAX = _env_int("VOICEVOX_CHUNK_HARD_MAX", CHUNK_HARD_MAX_DEFAULT)
 
 # 最初のチャンクの目安文字数。初手の合成時間を短くして声出しまでのレイテンシを縮める
-FIRST_CHUNK_CHARS = _env_int("VOICEVOX_FIRST_CHUNK_CHARS", 30)
+FIRST_CHUNK_CHARS = _env_int("VOICEVOX_FIRST_CHUNK_CHARS", FIRST_CHUNK_CHARS_DEFAULT)
 
 
 # ---------- e2k(英単語 → カタカナ)フォールバック ----------

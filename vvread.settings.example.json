@@ -48,9 +48,25 @@
 
     // Maximum input length (in characters). Excess is truncated and
     // the suffix "(以下省略)" is appended to the spoken text.
+    // Set to 0 for no limit (internally capped at 9999).
     // Default: 500
     // Override with env: VOICEVOX_MAX_CHARS
-    "maxChars": 500
+    "maxChars": 500,
+
+    // Target character count per chunk (2nd chunk onward).
+    // Default: 200
+    // Override with env: VOICEVOX_CHUNK_CHARS
+    "chunkChars": 200,
+
+    // Hard maximum characters per chunk. Force-splits when no boundary found.
+    // Default: 400
+    // Override with env: VOICEVOX_CHUNK_HARD_MAX
+    "chunkHardMax": 400,
+
+    // Maximum inline-code length before abbreviating to "コマンド" / "ファイル".
+    // Default: 25
+    // Override with env: VOICEVOX_INLINE_CODE_LIMIT
+    "inlineCodeLimit": 25
   },
 
   // === Logging ===
