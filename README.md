@@ -143,9 +143,27 @@ vvread play morning.wav
 | コマンド | 説明 |
 |---|---|
 | `vvread setup [--yes]` | 対話セットアップ（engine 疎通確認 + e2k + Claude hook 登録） |
-| `vvread install [--scope SCOPE] [--dry-run]` | Claude Code hook を `settings.json` に登録 |
+| `vvread install [--scope SCOPE] [--yes] [--dry-run]` | Claude Code hook を対話式（TTY）または `--yes` で非対話登録 |
 | `vvread uninstall [--scope SCOPE]` | hook を解除 |
+| `vvread speakers` | VOICEVOX Engine から利用可能な speaker/style ID 一覧を表示 |
+| `vvread config` / `vvread edit` | `vvread.settings.json` を対話式に編集（TTY 必須） |
 | `vvread doctor [--offline]` | ヘルスチェック |
+
+#### `--scope` の値
+
+| Scope | 対象ファイル | 用途 |
+|---|---|---|
+| `project-local`（デフォルト） | `<cwd>/.claude/settings.local.json` | 通常は gitignore 対象。最も安全なデフォルト |
+| `project` | `<cwd>/.claude/settings.json` | チームで共有したい場合 |
+| `user` | `~/.claude/settings.json` | 全プロジェクトで有効化 |
+
+```bash
+vvread install                        # 対話式（scope・speaker を選択）
+vvread install --yes                  # 非対話、project-local（デフォルト）
+vvread install --scope user --yes     # 非対話、全プロジェクト対象
+vvread speakers                       # speaker ID 一覧を確認
+vvread config                         # 設定を対話編集
+```
 
 ### 5-4. `vvread doctor` 出力例
 

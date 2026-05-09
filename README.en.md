@@ -142,9 +142,27 @@ vvread play morning.wav
 | Command | Description |
 |---|---|
 | `vvread setup [--yes]` | Interactive setup (engine reachability check + e2k + Claude hook registration). |
-| `vvread install [--scope SCOPE] [--dry-run]` | Register the Claude Code hook into `settings.json`. |
+| `vvread install [--scope SCOPE] [--yes] [--dry-run]` | Register the Claude Code hook interactively (TTY) or with `--yes` for non-interactive use. |
 | `vvread uninstall [--scope SCOPE]` | Unregister the hook. |
+| `vvread speakers` | List available speaker/style IDs from the VOICEVOX Engine. |
+| `vvread config` / `vvread edit` | Interactively edit `vvread.settings.json` (TTY required). |
 | `vvread doctor [--offline]` | Health check. |
+
+#### `--scope` values
+
+| Scope | Target file | Use case |
+|---|---|---|
+| `project-local` (default) | `<cwd>/.claude/settings.local.json` | Gitignored by default; safest option. |
+| `project` | `<cwd>/.claude/settings.json` | Use when sharing hook config with a team. |
+| `user` | `~/.claude/settings.json` | Enables voiceClaude for every project. |
+
+```bash
+vvread install                        # interactive: prompts for scope + speaker
+vvread install --yes                  # non-interactive, project-local (default)
+vvread install --scope user --yes     # non-interactive, all projects
+vvread speakers                       # list speaker IDs
+vvread config                         # edit settings interactively
+```
 
 ### 5-4. Sample `vvread doctor` output
 

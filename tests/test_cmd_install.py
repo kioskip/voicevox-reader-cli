@@ -118,7 +118,7 @@ def run_vvread_uninstall(*args, env_extra=None, cwd=None, timeout=10):
 class TestInstallExitCodes:
     def test_install_new_file_exits_0(self, tmp_path):
         cwd, home, env = _setup_env(tmp_path)
-        r = run_install(env_extra=env, cwd=cwd)
+        r = run_install("--yes", env_extra=env, cwd=cwd)
         assert r.returncode == 0, f"stderr={r.stderr}"
         # default scope = project → settings.local.json
         assert (cwd / ".claude" / "settings.local.json").exists()
@@ -126,10 +126,10 @@ class TestInstallExitCodes:
     def test_install_already_present_exits_0(self, tmp_path):
         cwd, home, env = _setup_env(tmp_path)
         # 1 回目で登録
-        r1 = run_install(env_extra=env, cwd=cwd)
+        r1 = run_install("--yes", env_extra=env, cwd=cwd)
         assert r1.returncode == 0
         # 2 回目: skip(変更なし)で 0
-        r2 = run_install(env_extra=env, cwd=cwd)
+        r2 = run_install("--yes", env_extra=env, cwd=cwd)
         assert r2.returncode == 0
         assert "already" in r2.stdout
 
@@ -138,7 +138,7 @@ class TestInstallExitCodes:
         target = cwd / ".claude" / "settings.local.json"
         target.parent.mkdir(parents=True)
         target.write_text("{ broken json", encoding="utf-8")
-        r = run_install(env_extra=env, cwd=cwd)
+        r = run_install("--yes", env_extra=env, cwd=cwd)
         assert r.returncode == 1
         assert "invalid JSON" in r.stderr
 
@@ -161,22 +161,22 @@ class TestInstallExitCodes:
 class TestInstallScopes:
     def test_default_is_project_local(self, tmp_path):
         cwd, home, env = _setup_env(tmp_path)
-        r = run_install(env_extra=env, cwd=cwd)
+        r = run_install("--yes", env_extra=env, cwd=cwd)
         assert r.returncode == 0
         assert (cwd / ".claude" / "settings.local.json").exists()
         assert not (cwd / ".claude" / "settings.json").exists()
         assert not (home / ".claude" / "settings.json").exists()
 
-    def test_project_shared_explicit(self, tmp_path):
+    def test_project_scope_writes_to_settings_json(self, tmp_path):
         cwd, home, env = _setup_env(tmp_path)
-        r = run_install("--scope", "project-shared", env_extra=env, cwd=cwd)
+        r = run_install("--yes", "--scope", "project", env_extra=env, cwd=cwd)
         assert r.returncode == 0
         assert (cwd / ".claude" / "settings.json").exists()
         assert not (cwd / ".claude" / "settings.local.json").exists()
 
     def test_user_scope_writes_to_home(self, tmp_path):
         cwd, home, env = _setup_env(tmp_path)
-        r = run_install("--scope", "user", env_extra=env, cwd=cwd)
+        r = run_install("--yes", "--scope", "user", env_extra=env, cwd=cwd)
         assert r.returncode == 0
         assert (home / ".claude" / "settings.json").exists()
         assert not (cwd / ".claude" / "settings.local.json").exists()
@@ -218,7 +218,7 @@ class TestInstallMergeIntegration:
             "permissions": {"allow": ["Bash(*)"]},
             "model": "opus",
         })
-        r = run_install(env_extra=env, cwd=cwd)
+        r = run_install("--yes", env_extra=env, cwd=cwd)
         assert r.returncode == 0
         data = _read_settings(target)
         assert data["permissions"] == {"allow": ["Bash(*)"]}
@@ -235,7 +235,7 @@ class TestInstallMergeIntegration:
                 }]},
             ]}
         })
-        r = run_install(env_extra=env, cwd=cwd)
+        r = run_install("--yes", env_extra=env, cwd=cwd)
         assert r.returncode == 0
         data = _read_settings(target)
         cmds = []
@@ -257,7 +257,7 @@ class TestInstallBackup:
         target = cwd / ".claude" / "settings.local.json"
         _write_settings(target, {"model": "opus"})
         original = target.read_text(encoding="utf-8")
-        r = run_install(env_extra=env, cwd=cwd)
+        r = run_install("--yes", env_extra=env, cwd=cwd)
         assert r.returncode == 0
         bak = target.with_suffix(target.suffix + ".bak")
         assert bak.exists()
@@ -287,7 +287,7 @@ class TestInstallSpaceInPath:
             "VVREAD_PROJECT_DIR": str(fake_repo),
             "VVREAD_SCRIPTS_DIR": str(REPO / "scripts"),
         }
-        r = run_install(env_extra=env, cwd=cwd)
+        r = run_install("--yes", env_extra=env, cwd=cwd)
         assert r.returncode == 0
         target = cwd / ".claude" / "settings.local.json"
         data = _read_settings(target)
@@ -317,7 +317,7 @@ class TestUninstallExitCodes:
     def test_uninstall_existing_voiceclaude_exits_0(self, tmp_path):
         cwd, home, env = _setup_env(tmp_path)
         # 先に install して状態を作る
-        r0 = run_install(env_extra=env, cwd=cwd)
+        r0 = run_install("--yes", env_extra=env, cwd=cwd)
         assert r0.returncode == 0
         r1 = run_uninstall(env_extra=env, cwd=cwd)
         assert r1.returncode == 0
@@ -374,7 +374,7 @@ class TestUninstallOnlyVoiceClaudeIntegration:
 class TestUninstallDryRunIntegration:
     def test_dry_run_no_change(self, tmp_path):
         cwd, home, env = _setup_env(tmp_path)
-        run_install(env_extra=env, cwd=cwd)
+        run_install("--yes", env_extra=env, cwd=cwd)
         target = cwd / ".claude" / "settings.local.json"
         original = target.read_text(encoding="utf-8")
         r = run_uninstall("--dry-run", env_extra=env, cwd=cwd)
@@ -392,13 +392,13 @@ class TestUninstallDryRunIntegration:
 class TestVvreadDispatch:
     def test_vvread_install_dispatches(self, tmp_path):
         cwd, home, env = _setup_env(tmp_path)
-        r = run_vvread_install(env_extra=env, cwd=cwd)
+        r = run_vvread_install("--yes", env_extra=env, cwd=cwd)
         assert r.returncode == 0
         assert (cwd / ".claude" / "settings.local.json").exists()
 
     def test_vvread_uninstall_dispatches(self, tmp_path):
         cwd, home, env = _setup_env(tmp_path)
-        run_vvread_install(env_extra=env, cwd=cwd)
+        run_vvread_install("--yes", env_extra=env, cwd=cwd)
         r = run_vvread_uninstall(env_extra=env, cwd=cwd)
         assert r.returncode == 0
         # voiceClaude hook は消える(他キーは無いので hooks 自体が消える)
@@ -441,7 +441,7 @@ class TestRoundTrip:
             ]}
         }
         _write_settings(target, original_data)
-        run_install(env_extra=env, cwd=cwd)
+        run_install("--yes", env_extra=env, cwd=cwd)
         run_uninstall(env_extra=env, cwd=cwd)
         # voiceClaude hook が消え、他はそのまま
         data = _read_settings(target)
@@ -451,3 +451,27 @@ class TestRoundTrip:
             for h in block["hooks"]:
                 cmds.append(h["command"])
         assert cmds == ["/usr/local/bin/keep_me"]
+
+
+# ---------------------------------------------------------------------------
+# deprecated scope alias (CLI 統合)
+# ---------------------------------------------------------------------------
+
+
+class TestDeprecatedScopeAlias:
+    def test_project_shared_warns_and_writes_settings_json(self, tmp_path):
+        cwd, home, env = _setup_env(tmp_path)
+        r = run_install("--yes", "--scope", "project-shared", env_extra=env, cwd=cwd)
+        assert r.returncode == 0
+        # deprecated alias なので settings.json(project scope)に書かれる
+        assert (cwd / ".claude" / "settings.json").exists()
+        assert not (cwd / ".claude" / "settings.local.json").exists()
+        # 警告が stderr に出る
+        assert "deprecated" in r.stderr.lower()
+
+    def test_project_local_is_default_scope(self, tmp_path):
+        """デフォルト scope は project-local → settings.local.json"""
+        cwd, home, env = _setup_env(tmp_path)
+        r = run_install("--yes", env_extra=env, cwd=cwd)
+        assert r.returncode == 0
+        assert (cwd / ".claude" / "settings.local.json").exists()
