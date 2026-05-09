@@ -20,8 +20,8 @@ Claude Code の Stop hook (`<scope>/.claude/settings.json` 等)に voiceClaude
 正本を置き、doctor.py は import で再利用する(drift 防止)。
 
 CLI:
-  hook_install.py install [--scope project|project-shared|user] [--dry-run] [--yes]
-  hook_install.py uninstall [--scope project|project-shared|user] [--dry-run]
+  hook_install.py install [--scope project-local|project|user] [--dry-run] [--yes]
+  hook_install.py uninstall [--scope project-local|project|user] [--dry-run]
 
 終了コード:
   0 = 成功(変更なしも成功)
@@ -34,18 +34,32 @@ import argparse
 import json
 import os
 import shlex
-import shutil
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+# scripts/ を sys.path に追加（他 module 直 import 用）
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+import json_file as _jf  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 定数 / 仕様
 # ---------------------------------------------------------------------------
 
-SCOPES = ("project", "project-shared", "user")
-DEFAULT_SCOPE = "project"
+SCOPES = ("project-local", "project", "user")
+DEFAULT_SCOPE = "project-local"
+
+# v0.1.2 で旧 scope 名を deprecated alias として受け付ける。
+# 旧 "project" → settings.local.json は新 "project-local" に対応する（CHANGELOG 参照）。
+_DEPRECATED_SCOPE_ALIASES: Dict[str, str] = {
+    "project-shared": "project",
+}
 
 # Claude Code 2.1.110+ で async hook を使うための既定値(Backlog 確定事項)。
 HOOK_TIMEOUT_DEFAULT = 600
@@ -66,18 +80,39 @@ def resolve_settings_path(
     """scope に対応する settings.json の絶対パスを返す。
 
     cwd / home は test 用 DI。default は現在の Path.cwd() / Path.home()。
+
+    scope マッピング (v0.1.2):
+      project-local -> <cwd>/.claude/settings.local.json
+      project       -> <cwd>/.claude/settings.json
+      user          -> ~/.claude/settings.json
     """
     if cwd is None:
         cwd = Path.cwd()
     if home is None:
         home = Path.home()
-    if scope == "project":
+    if scope == "project-local":
         return cwd / ".claude" / "settings.local.json"
-    if scope == "project-shared":
+    if scope == "project":
         return cwd / ".claude" / "settings.json"
     if scope == "user":
         return home / ".claude" / "settings.json"
     raise ValueError(f"unknown scope: {scope!r}")
+
+
+def _resolve_scope_alias(scope: str) -> Tuple[str, Optional[str]]:
+    """deprecated scope alias を解決する。
+
+    戻り値: (resolved_scope, warning_msg | None)
+    alias でなければ (scope, None) をそのまま返す。
+    """
+    if scope in _DEPRECATED_SCOPE_ALIASES:
+        resolved = _DEPRECATED_SCOPE_ALIASES[scope]
+        msg = (
+            f"WARNING: --scope {scope!r} is deprecated. "
+            f"Use --scope {resolved!r} instead."
+        )
+        return resolved, msg
+    return scope, None
 
 
 # ---------------------------------------------------------------------------
@@ -143,50 +178,18 @@ def build_hook_command(repo_root: Path) -> str:
 
 
 def _read_settings(path: Path) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """ファイルを読んで dict を返す。エラー時は (None, error_msg)、
-    ファイル不在は (None, None)(エラーではない、新規作成扱い)。
-    """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None, None
-    except OSError as e:
-        return None, f"cannot read: {e}"
-    if not text.strip():
-        # 空ファイル = 新規作成扱い
-        return None, None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
-        return None, f"invalid JSON: {e}"
-    if not isinstance(data, dict):
-        return None, "top-level must be an object"
-    return data, None
+    """ファイルを読んで dict を返す。json_file.load_json_file に委譲。"""
+    return _jf.load_json_file(path)
 
 
 def _write_settings(path: Path, data: Dict[str, Any]) -> None:
-    """JSON を 2-space indent で atomic に書き出す(VS Code default に合わせる)。
-
-    `path.write_text` は truncate → write のシーケンスで、書込中に kill /
-    disk full / power loss が起きると settings.json が途中まで書かれた壊れた
-    状態で残り、Claude Code が起動失敗する原因になりうる。
-    .tmp に書いてから os.replace で atomic に置き換える(POSIX rename(2) は
-    同一 FS で atomic、macOS / Linux で保証)。
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    """JSON を atomic に書き出す。json_file.write_json_atomic に委譲。"""
+    _jf.write_json_atomic(path, data)
 
 
 def _backup_settings(path: Path) -> Optional[Path]:
-    """`.bak` を作って返す。元ファイル不在なら None"""
-    if not path.exists():
-        return None
-    bak = path.with_suffix(path.suffix + ".bak")
-    shutil.copy2(path, bak)
-    return bak
+    """`.bak` を作って返す。json_file.backup_file に委譲。"""
+    return _jf.backup_file(path)
 
 
 # ---------------------------------------------------------------------------
@@ -557,9 +560,322 @@ def _emit_uninstall(result: UninstallResult) -> None:
     )
 
 
-def _cmd_install(args: argparse.Namespace) -> int:
+# ---------------------------------------------------------------------------
+# 対話 helper（setup.py と独立実装: 循環 import を避けるため）
+# ---------------------------------------------------------------------------
+
+
+def _is_tty(stream: Any = None) -> bool:
+    """stream（default: sys.stdin）が TTY かどうか判定する。"""
+    s = stream or sys.stdin
+    isatty = getattr(s, "isatty", lambda: False)
+    try:
+        return bool(isatty())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _prompt_yn(
+    question: str,
+    default: bool = True,
+    *,
+    in_stream: Any = None,
+    out_stream: Any = None,
+) -> bool:
+    """Y/n プロンプト。"""
+    suffix = "[Y/n]" if default else "[y/N]"
+    out = out_stream or sys.stdout
+    in_ = in_stream or sys.stdin
+    out.write(f"{question} {suffix}: ")
+    out.flush()
+    line = in_.readline()
+    if not line:
+        return default
+    line = line.strip().lower()
+    if not line:
+        return default
+    return line in ("y", "yes", "1", "true")
+
+
+def _prompt_choice(
+    question: str,
+    choices: List[str],
+    default: str,
+    *,
+    in_stream: Any = None,
+    out_stream: Any = None,
+) -> str:
+    """番号付き選択肢プロンプト。Enter でデフォルト。"""
+    out = out_stream or sys.stdout
+    in_ = in_stream or sys.stdin
+    out.write(f"{question}\n")
+    for i, choice in enumerate(choices, 1):
+        marker = "  [default]" if choice == default else ""
+        out.write(f"  {i}) {choice}{marker}\n")
+    while True:
+        out.write(f"選択 [1-{len(choices)}] (Enter で {default!r}): ")
+        out.flush()
+        line = in_.readline()
+        if not line or not line.strip():
+            return default
+        try:
+            idx = int(line.strip())
+            if 1 <= idx <= len(choices):
+                return choices[idx - 1]
+        except ValueError:
+            pass
+        out.write(f"  1 から {len(choices)} の数字を入力してください。\n")
+
+
+def _prompt_speaker_id(
+    question: str,
+    speaker_options: List[str],
+    speaker_ids: List[int],
+    current_id: int,
+    *,
+    in_stream: Any = None,
+    out_stream: Any = None,
+) -> int:
+    """Speaker を style ID で選択するプロンプト。
+
+    一覧は番号付きで表示するが、入力は style ID（数字）で行う。
+    Enter のみで current_id を返す。
+    """
+    out = out_stream or sys.stdout
+    in_ = in_stream or sys.stdin
+    out.write(f"{question}\n")
+    for label in speaker_options:
+        out.write(f"  {label}\n")
+    valid_ids = set(speaker_ids)
+    while True:
+        out.write(f"Speaker ID を入力してください [Enter で {current_id}]: ")
+        out.flush()
+        line = in_.readline()
+        if not line or not line.strip():
+            return current_id
+        try:
+            entered = int(line.strip())
+            if entered in valid_ids:
+                return entered
+            out.write(f"  ID {entered} は存在しません。上のリストの ID を入力してください。\n")
+        except ValueError:
+            out.write("  数字（style ID）を入力してください。\n")
+
+
+def _fetch_speakers_for_install(
+    engine_url: str,
+    timeout: float = 3.0,
+) -> Optional[List[Dict[str, Any]]]:
+    """install 用の簡易 /speakers 取得。
+
+    失敗 / malformed → None（install は止めない）。
+    """
+    url = engine_url.rstrip("/") + "/speakers"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+            text = resp.read().decode("utf-8", errors="replace")
+        data = json.loads(text)
+        if isinstance(data, list):
+            return data
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _write_vvread_settings_speaker(
+    cwd: Path,
+    speaker_id: int,
+) -> None:
+    """cwd/vvread.settings.json に voicevox.speaker を書き込む。"""
+    settings_path = cwd / "vvread.settings.json"
+    data, err = _jf.load_json_file(settings_path)
+    if err:
+        return  # 破損ファイルには触らない
+    if data is None:
+        data = {}
+    voicevox = data.setdefault("voicevox", {})
+    if not isinstance(voicevox, dict):
+        data["voicevox"] = {}
+        voicevox = data["voicevox"]
+    voicevox["speaker"] = speaker_id
+    _jf.backup_file(settings_path)
+    _jf.write_json_atomic(settings_path, data)
+
+
+# ---------------------------------------------------------------------------
+# interactive_install
+# ---------------------------------------------------------------------------
+
+
+def interactive_install(
+    *,
+    scope: Optional[str] = None,
+    dry_run: bool = False,
+    cwd: Optional[Path] = None,
+    home: Optional[Path] = None,
+    repo_root: Optional[Path] = None,
+    in_stream: Any = None,
+    out_stream: Any = None,
+    err_stream: Any = None,
+) -> int:
+    """TTY 確認 → scope 選択 → hook 確認 → speaker 選択 → install 実行。
+
+    戻り値は exit code (0/1)。
+    """
+    if cwd is None:
+        cwd = Path.cwd()
+    if home is None:
+        home = Path.home()
+    out = out_stream or sys.stdout
+    err = err_stream or sys.stderr
+
+    # 1. TTY チェック
+    if not _is_tty(in_stream):
+        err.write(
+            "ERROR: interactive install requires a TTY.\n"
+            "Run with --yes for non-interactive install.\n"
+        )
+        return 1
+
+    # 2. scope 選択
+    scope_choices = list(SCOPES)
+    scope_labels = [
+        f"project-local  →  {cwd}/.claude/settings.local.json",
+        f"project        →  {cwd}/.claude/settings.json",
+        f"user           →  {home}/.claude/settings.json",
+    ]
+    default_scope_label = scope_labels[0]
+    chosen_label = _prompt_choice(
+        "登録先を選択してください:",
+        scope_labels,
+        default_scope_label,
+        in_stream=in_stream,
+        out_stream=out,
+    )
+    chosen_scope = scope_choices[scope_labels.index(chosen_label)]
+
+    # 2-b. 選択した scope に既に hook が登録済みか確認 → 登録済みなら即終了
+    if repo_root is None:
+        rr_env = os.environ.get("VVREAD_PROJECT_DIR")
+        if rr_env:
+            repo_root = Path(rr_env)
+        else:
+            repo_root = Path(__file__).resolve().parent.parent
+
+    _check_path = resolve_settings_path(chosen_scope, cwd=cwd, home=home)
+    _check_data, _check_err = _read_settings(_check_path)
+    if not _check_err and _check_data is not None:
+        try:
+            _stop_blocks = _ensure_stop_hooks(_check_data)
+            _has_vc, _ = _scan_for_voiceclaude(_stop_blocks, repo_root)
+        except RuntimeError:
+            _has_vc = False
+        if _has_vc:
+            out.write(
+                "vvreadはすでに設定済です。\n"
+                "`vvread uninstall`: この場所から設定を消します\n"
+                "`vvread config`: 設定を変更します\n"
+            )
+            return 0
+
+    # 3. .claude/ 存在確認
+    claude_dir = cwd / ".claude"
+    if not claude_dir.exists():
+        if not _prompt_yn(
+            f".claude/ が存在しません。{claude_dir} を作成しますか？",
+            default=True,
+            in_stream=in_stream,
+            out_stream=out,
+        ):
+            out.write("インストールをキャンセルしました。\n")
+            return 0
+
+    # 4. hook command を表示
+    hook_command = build_hook_command(repo_root)
+    out.write(f"\nHook command:\n  {hook_command}\n\n")
+
+    # 5. VOICEVOX speaker 選択
+    import settings as _stg  # noqa: PLC0415 (遅延 import: 循環防止)
+    loaded = _stg.load(cwd=cwd)
+    rv = loaded.get("voicevox.engineUrl")
+    engine_url = rv.value if rv is not None else "http://127.0.0.1:50021"
+
+    speakers_data = _fetch_speakers_for_install(engine_url)
+    selected_speaker: Optional[int] = None
+
+    if speakers_data is None:
+        out.write(
+            "Warning: VOICEVOXと連携されていません。起動状況または設定を確認してください。\n"
+            "参考: vvread doctor\n"
+            "Speaker 選択をスキップします。後で `vvread config` で設定できます。\n\n"
+        )
+    else:
+        speaker_options: List[str] = []
+        speaker_ids: List[int] = []
+        for sp in speakers_data:
+            if not isinstance(sp, dict):
+                continue
+            sp_name = sp.get("name", "")
+            for st in sp.get("styles", []) or []:
+                if not isinstance(st, dict):
+                    continue
+                st_id = st.get("id")
+                st_name = st.get("name", "")
+                if not (isinstance(st_id, int) and isinstance(st_name, str)):
+                    continue
+                if st_name != "ノーマル":
+                    continue
+                speaker_options.append(f"{st_id}: {sp_name}")
+                speaker_ids.append(st_id)
+
+        if speaker_options:
+            rv_speaker = loaded.get("voicevox.speaker")
+            current_id = rv_speaker.value if rv_speaker is not None else 3
+            if current_id not in speaker_ids:
+                current_id = speaker_ids[0]
+            selected_speaker = _prompt_speaker_id(
+                "Speaker を選択してください:",
+                speaker_options,
+                speaker_ids,
+                current_id,
+                in_stream=in_stream,
+                out_stream=out,
+            )
+        else:
+            out.write("有効な Speaker 情報が取得できませんでした。スキップします。\n\n")
+
+    # 6. install 実行
     result = install(
-        scope=args.scope,
+        scope=chosen_scope,
+        cwd=cwd,
+        home=home,
+        repo_root=repo_root,
+        hook_command=hook_command,
+        dry_run=dry_run,
+        yes=True,
+    )
+    _emit_install(result)
+    if result.error:
+        return 1
+
+    # speaker を vvread.settings.json に書き込む
+    if selected_speaker is not None and not dry_run:
+        _write_vvread_settings_speaker(cwd, selected_speaker)
+        out.write(f"Speaker ID {selected_speaker} を vvread.settings.json に保存しました。\n")
+
+    return 0
+
+
+def _cmd_install(args: argparse.Namespace) -> int:
+    scope, warn = _resolve_scope_alias(args.scope)
+    if warn:
+        print(warn, file=sys.stderr)
+
+    if not args.yes and not args.dry_run:
+        return interactive_install(scope=scope, dry_run=False)
+
+    result = install(
+        scope=scope,
         dry_run=args.dry_run,
         yes=args.yes,
     )
@@ -568,8 +884,11 @@ def _cmd_install(args: argparse.Namespace) -> int:
 
 
 def _cmd_uninstall(args: argparse.Namespace) -> int:
+    scope, warn = _resolve_scope_alias(args.scope)
+    if warn:
+        print(warn, file=sys.stderr)
     result = uninstall(
-        scope=args.scope,
+        scope=scope,
         dry_run=args.dry_run,
     )
     _emit_uninstall(result)
@@ -582,10 +901,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    _all_scope_choices = list(SCOPES) + list(_DEPRECATED_SCOPE_ALIASES.keys())
+
     p_install = sub.add_parser("install", help="register Claude Code Stop hook")
     p_install.add_argument(
-        "--scope", choices=SCOPES, default=DEFAULT_SCOPE,
+        "--scope", choices=_all_scope_choices, default=DEFAULT_SCOPE,
         help=f"target settings scope (default: {DEFAULT_SCOPE})",
+        metavar="SCOPE",
     )
     p_install.add_argument(
         "--dry-run", action="store_true",
@@ -593,8 +915,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     p_install.add_argument(
         "--yes", action="store_true",
-        help="(reserved for non-interactive setup; "
-             "v0.1 has no prompts so this is currently a no-op placeholder)",
+        help="non-interactive mode: skip prompts and use defaults",
     )
     p_install.set_defaults(func=_cmd_install)
 
@@ -602,8 +923,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         "uninstall", help="remove vvread-managed Stop hook only",
     )
     p_uninstall.add_argument(
-        "--scope", choices=SCOPES, default=DEFAULT_SCOPE,
+        "--scope", choices=_all_scope_choices, default=DEFAULT_SCOPE,
         help=f"target settings scope (default: {DEFAULT_SCOPE})",
+        metavar="SCOPE",
     )
     p_uninstall.add_argument(
         "--dry-run", action="store_true",

@@ -56,14 +56,14 @@ def _read_settings(path: Path) -> dict:
 
 
 class TestResolveSettingsPath:
+    def test_project_local_scope(self, tmp_path):
+        cwd, home = _make_dirs(tmp_path)
+        p = hi.resolve_settings_path("project-local", cwd=cwd, home=home)
+        assert p == cwd / ".claude" / "settings.local.json"
+
     def test_project_scope(self, tmp_path):
         cwd, home = _make_dirs(tmp_path)
         p = hi.resolve_settings_path("project", cwd=cwd, home=home)
-        assert p == cwd / ".claude" / "settings.local.json"
-
-    def test_project_shared_scope(self, tmp_path):
-        cwd, home = _make_dirs(tmp_path)
-        p = hi.resolve_settings_path("project-shared", cwd=cwd, home=home)
         assert p == cwd / ".claude" / "settings.json"
 
     def test_user_scope(self, tmp_path):
@@ -136,7 +136,7 @@ class TestInstallNew:
         repo = tmp_path / "repo"
         repo.mkdir()
         result = hi.install(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is None
         assert result.changed is True
@@ -180,7 +180,7 @@ class TestInstallMerge:
             "model": "opus",
         })
         result = hi.install(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is None
         data = _read_settings(target)
@@ -206,7 +206,7 @@ class TestInstallMerge:
             }
         })
         result = hi.install(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is None
         data = _read_settings(target)
@@ -226,10 +226,10 @@ class TestInstallDoubleRegister:
         repo = tmp_path / "repo"
         repo.mkdir()
         # 1 回目
-        r1 = hi.install(scope="project", cwd=cwd, home=home, repo_root=repo)
+        r1 = hi.install(scope="project-local", cwd=cwd, home=home, repo_root=repo)
         assert r1.changed is True
         # 2 回目: skip
-        r2 = hi.install(scope="project", cwd=cwd, home=home, repo_root=repo)
+        r2 = hi.install(scope="project-local", cwd=cwd, home=home, repo_root=repo)
         assert r2.error is None
         assert r2.changed is False
         assert r2.skipped_already_present is True
@@ -250,7 +250,7 @@ class TestInstallDryRun:
         repo = tmp_path / "repo"
         repo.mkdir()
         result = hi.install(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
             dry_run=True,
         )
         assert result.error is None
@@ -267,7 +267,7 @@ class TestInstallDryRun:
         _write_settings(target, {"model": "opus"})
         original = target.read_text(encoding="utf-8")
         result = hi.install(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
             dry_run=True,
         )
         assert result.error is None
@@ -287,7 +287,7 @@ class TestInstallBackup:
         _write_settings(target, {"model": "sonnet"})
         original = target.read_text(encoding="utf-8")
         result = hi.install(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is None
         assert result.changed is True
@@ -301,7 +301,7 @@ class TestInstallBackup:
         repo = tmp_path / "repo"
         repo.mkdir()
         result = hi.install(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.changed is True
         # 元ファイルが無かったので .bak も作らない
@@ -313,15 +313,15 @@ class TestInstallBackup:
         repo = tmp_path / "repo"
         repo.mkdir()
         # 1 回目 install(元ファイル無し → .bak 無し)
-        hi.install(scope="project", cwd=cwd, home=home, repo_root=repo)
+        hi.install(scope="project-local", cwd=cwd, home=home, repo_root=repo)
         # 1 回目 uninstall(変更ありで .bak 作られる)
         r1 = hi.uninstall(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert r1.backup_path is not None
         # 2 回目 install(変更ありで .bak 上書き)
         r2 = hi.install(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert r2.backup_path is not None
         assert r2.backup_path == r1.backup_path  # 同じパス(上書き)
@@ -335,7 +335,7 @@ class TestInstallAtomicWrite:
         repo = tmp_path / "repo"
         repo.mkdir()
         result = hi.install(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is None
         assert result.changed is True
@@ -350,9 +350,9 @@ class TestInstallAtomicWrite:
         repo = tmp_path / "repo"
         repo.mkdir()
         # install してから uninstall
-        hi.install(scope="project", cwd=cwd, home=home, repo_root=repo)
+        hi.install(scope="project-local", cwd=cwd, home=home, repo_root=repo)
         result = hi.uninstall(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is None
         tmp_path_artifact = result.settings_path.with_suffix(
@@ -368,7 +368,7 @@ class TestInstallSpaceInPath:
         repo = tmp_path / "with space" / "repo"
         repo.mkdir(parents=True)
         result = hi.install(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is None
         assert result.changed is True
@@ -397,7 +397,7 @@ class TestInstallBrokenJson:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("{ this is not json", encoding="utf-8")
         result = hi.install(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is not None
         assert "invalid JSON" in result.error
@@ -414,7 +414,7 @@ class TestInstallBrokenJson:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("[1,2,3]", encoding="utf-8")
         result = hi.install(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is not None
         assert "object" in result.error
@@ -450,7 +450,7 @@ class TestUninstallOnlyVvread:
             }
         })
         result = hi.uninstall(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is None
         assert result.changed is True
@@ -480,7 +480,7 @@ class TestUninstallOnlyVvread:
             }
         })
         result = hi.uninstall(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is None
         data = _read_settings(target)
@@ -504,7 +504,7 @@ class TestUninstallOnlyVvread:
         })
         original = target.read_text(encoding="utf-8")
         result = hi.uninstall(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is None
         assert result.changed is False
@@ -517,7 +517,7 @@ class TestUninstallOnlyVvread:
         repo = tmp_path / "repo"
         repo.mkdir()
         result = hi.uninstall(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is None
         assert result.changed is False
@@ -542,7 +542,7 @@ class TestUninstallDryRun:
         })
         original = target.read_text(encoding="utf-8")
         result = hi.uninstall(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
             dry_run=True,
         )
         assert result.error is None
@@ -571,7 +571,7 @@ class TestUninstallBackup:
         })
         original = target.read_text(encoding="utf-8")
         result = hi.uninstall(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is None
         assert result.backup_path is not None
@@ -588,7 +588,7 @@ class TestUninstallBrokenJson:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("{ broken", encoding="utf-8")
         result = hi.uninstall(
-            scope="project", cwd=cwd, home=home, repo_root=repo,
+            scope="project-local", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is not None
         assert "invalid JSON" in result.error
@@ -618,3 +618,181 @@ class TestInvalidScope:
             scope="bogus", cwd=cwd, home=home, repo_root=repo,
         )
         assert result.error is not None
+
+
+# ---------------------------------------------------------------------------
+# deprecated scope alias
+# ---------------------------------------------------------------------------
+
+
+class TestDeprecatedScopeAlias:
+    def test_project_shared_resolves_to_project(self):
+        resolved, warn = hi._resolve_scope_alias("project-shared")
+        assert resolved == "project"
+        assert warn is not None
+        assert "deprecated" in warn.lower()
+
+    def test_non_deprecated_scope_passthrough(self):
+        for scope in hi.SCOPES:
+            resolved, warn = hi._resolve_scope_alias(scope)
+            assert resolved == scope
+            assert warn is None
+
+    def test_project_shared_install_writes_to_settings_json(self, tmp_path, capsys):
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        # deprecated alias を _resolve_scope_alias で解決して install に渡す
+        resolved, _warn = hi._resolve_scope_alias("project-shared")
+        result = hi.install(scope=resolved, cwd=cwd, home=home, repo_root=repo)
+        assert result.error is None
+        assert result.changed is True
+        # settings.json に書かれていること（deprecated alias の "project" 相当）
+        assert result.settings_path.name == "settings.json"
+
+
+# ---------------------------------------------------------------------------
+# interactive_install
+# ---------------------------------------------------------------------------
+
+
+import io  # noqa: E402 (テスト専用ユーティリティ)
+
+
+def _tty_stream(content: str) -> io.StringIO:
+    s = io.StringIO(content)
+    s.isatty = lambda: True
+    return s
+
+
+class TestInteractiveInstall:
+    def test_already_registered_exits_early(self, tmp_path):
+        """scope 選択後、既に登録済みなら対話を打ち切って exit 0"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        import json
+        (cwd / "vvread.settings.json").write_text(
+            json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
+            encoding="utf-8",
+        )
+        # 先に hook を登録しておく
+        hi.install(scope="project-local", cwd=cwd, home=home, repo_root=repo)
+        out = io.StringIO()
+        # scope 選択で Enter（project-local = デフォルト）のみ入力
+        in_stream = _tty_stream("\n")
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+        )
+        assert rc == 0
+        assert "設定済" in out.getvalue()
+        assert "uninstall" in out.getvalue()
+        assert "config" in out.getvalue()
+
+    def test_non_tty_without_yes_returns_error(self, tmp_path):
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        err = io.StringIO()
+        non_tty = io.StringIO()
+        non_tty.isatty = lambda: False
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=non_tty, err_stream=err,
+        )
+        assert rc == 1
+        assert "ERROR" in err.getvalue()
+        assert "TTY" in err.getvalue()
+
+    def test_yes_bypasses_to_direct_install(self, tmp_path):
+        """--yes を渡せば非 TTY でも install 成功（_cmd_install 経由で確認）。"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        result = hi.install(
+            scope="project-local", cwd=cwd, home=home, repo_root=repo, yes=True,
+        )
+        assert result.error is None
+        assert result.changed is True
+
+    def test_scope_defaults_to_project_local(self, tmp_path):
+        """TTY あり + Enter で scope 選択 → デフォルト project-local に install"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        out = io.StringIO()
+        # Engine を unreachable に向けて speaker 選択をスキップ
+        import json
+        (cwd / "vvread.settings.json").write_text(
+            json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
+            encoding="utf-8",
+        )
+        in_stream = _tty_stream("\n\n")
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+        )
+        assert rc == 0
+        assert (cwd / ".claude" / "settings.local.json").exists()
+
+    def test_no_speaker_when_engine_unreachable(self, tmp_path):
+        """Engine 未接続時は speaker 選択をスキップして install は成功"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        out = io.StringIO()
+        import json
+        (cwd / "vvread.settings.json").write_text(
+            json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
+            encoding="utf-8",
+        )
+        in_stream = _tty_stream("\n\n")
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+        )
+        assert rc == 0
+        assert "スキップ" in out.getvalue() or "VOICEVOX" in out.getvalue()
+
+    def test_speaker_written_to_vvread_settings(self, tmp_path):
+        """Engine 接続時: speaker 選択が vvread.settings.json に書かれる"""
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        sample = [{"name": "テスト", "styles": [{"name": "ノーマル", "id": 5}, {"name": "あまあま", "id": 9}]}]
+        body = json.dumps(sample).encode()
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *a): pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        # vvread.settings.json に engine URL を設定
+        settings_path = cwd / "vvread.settings.json"
+        settings_path.write_text(
+            json.dumps({"voicevox": {"engineUrl": f"http://127.0.0.1:{port}"}}),
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        # scope Enter + speaker Enter
+        in_stream = _tty_stream("\n\n\n")
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+        )
+        server.shutdown()
+        assert rc == 0
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert data["voicevox"]["speaker"] == 5

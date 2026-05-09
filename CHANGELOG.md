@@ -20,6 +20,36 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.1.2] - 2026-05-10
+
+### Added
+
+- `vvread speakers`: list available VOICEVOX speaker/style IDs fetched from the Engine's `/speakers` API. Each character is shown on one line (`ID: Character / Style`). Requires a running VOICEVOX Engine; exits with a warning when the Engine is unreachable.
+- `vvread config` / `vvread edit`: interactive editor for `vvread.settings.json`. Shows a description, hint, and example for each field before prompting. Editable fields: `engineUrl`, `speaker`, `volume`, `speed`, `pauseScale`, `pitch`, `intonation`, `inlineCodeLimit`, `chunkChars`, `chunkHardMax`, `maxChars`. Requires a TTY; creates a `.bak` before saving; preserves unknown keys.
+- `vvread install` now runs interactively by default (TTY required). Prompts for: scope selection (with resolved path displayed), `.claude/` directory creation, and speaker selection (Normal style only). Exits immediately with guidance when a hook is already registered in the chosen scope. `--yes` preserves the previous non-interactive behaviour.
+- `scripts/json_file.py`: shared atomic-write / backup utility used by `hook_install.py` and `config.py`.
+
+### Changed
+
+- `vvread install` scope names updated for clarity:
+
+  | New name | Old name | Target file |
+  |---|---|---|
+  | `project-local` (default) | `project` | `<cwd>/.claude/settings.local.json` |
+  | `project` | `project-shared` | `<cwd>/.claude/settings.json` |
+  | `user` | `user` | `~/.claude/settings.json` |
+
+### Deprecated
+
+- `--scope project-shared` is now a deprecated alias for `--scope project`. A warning is printed to stderr; the behaviour is unchanged. Will be removed in a future version.
+
+### Migration note (scope rename)
+
+If you previously ran `vvread install --scope project` (which wrote to `settings.local.json`), use `--scope project-local` going forward.
+If you previously ran `vvread install --scope project-shared` (which wrote to `settings.json`), use `--scope project` going forward.
+
+---
+
 ## [0.1.1] - 2026-05-10
 
 ### Added
