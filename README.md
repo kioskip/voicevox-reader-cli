@@ -203,7 +203,10 @@ CLIオプション > 環境変数 > project settings > user settings > default
     "engineUrl": "http://127.0.0.1:50021",
     "speaker": 3,
     "speed": 1.5,
-    "maxChars": 500
+    "maxChars": 500,   // 0 = 上限なし (内部 cap: 9999)
+    "chunkChars": 200,
+    "chunkHardMax": 400,
+    "inlineCodeLimit": 25
   },
   "log": {
     "level": "INFO"
@@ -235,7 +238,10 @@ CLIオプション > 環境変数 > project settings > user settings > default
 | `VOICEVOX_PAUSE_SCALE` | `1.0` | ポーズ長倍率 |
 | `VOICEVOX_PRE_PHONEME` | `0` | 発話前無音(秒) |
 | `VOICEVOX_POST_PHONEME` | `0` | 発話後無音(秒) |
-| `VOICEVOX_MAX_CHARS` | `500` | 入力 text の最大文字数（超過分は打ち切り） |
+| `VOICEVOX_MAX_CHARS` | `500` | 入力 text の最大文字数（超過分は打ち切り）。`0` で上限なし（内部 cap: 9999） |
+| `VOICEVOX_CHUNK_CHARS` | `200` | 2 チャンク目以降の目安文字数 |
+| `VOICEVOX_CHUNK_HARD_MAX` | `400` | チャンクの強制分割上限 |
+| `VOICEVOX_INLINE_CODE_LIMIT` | `25` | インラインコードの最大長。超えると「コマンド」等に短縮 |
 
 #### ログ / 通知
 

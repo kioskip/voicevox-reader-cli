@@ -430,3 +430,61 @@ class TestCliEnv:
         r = _run_cli("env", env={"VOICEVOX_ENGINE_URL": "http://127.0.0.1:50021"})
         assert r.returncode == 0
         assert "VOICEVOX_ENGINE_URL='http://127.0.0.1:50021'" in r.stdout
+
+    def test_env_output_has_export_prefix(self):
+        """env サブコマンドの全出力行が 'export ' で始まる(R-037)"""
+        r = _run_cli("env")
+        assert r.returncode == 0
+        for line in r.stdout.strip().splitlines():
+            assert line.startswith("export "), f"missing export prefix: {line!r}"
+
+    def test_env_vars_visible_to_subprocess(self, tmp_path):
+        """eval した変数が子プロセスの os.environ に伝播する(R-037 end-to-end)"""
+        proj = tmp_path / "vvread.settings.json"
+        proj.write_text('{"voicevox": {"maxChars": 123}}', encoding="utf-8")
+        base = {k: v for k, v in os.environ.items()
+                if not (k.startswith("VOICEVOX_") or k.startswith("VVREAD_"))}
+        script = (
+            f'eval "$({sys.executable} {SCRIPT} env)"; '
+            "printenv VOICEVOX_MAX_CHARS"
+        )
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                           cwd=str(tmp_path), env=base)
+        assert r.returncode == 0
+        assert r.stdout.strip() == "123"
+
+
+class TestChunkingSchema:
+    """R-036: settings.json に追加した chunking 系 3 キーのテスト"""
+
+    def test_chunking_defaults(self, tmp_path):
+        s = _load(tmp_path)
+        assert s.get("voicevox.chunkChars").value == 200
+        assert s.get("voicevox.chunkHardMax").value == 400
+        assert s.get("voicevox.inlineCodeLimit").value == 25
+
+    def test_chunking_project_override(self, tmp_path):
+        s = _load(tmp_path, project_data={
+            "voicevox": {"chunkChars": 150, "chunkHardMax": 300, "inlineCodeLimit": 20}
+        })
+        assert s.get("voicevox.chunkChars").value == 150
+        assert s.get("voicevox.chunkHardMax").value == 300
+        assert s.get("voicevox.inlineCodeLimit").value == 20
+
+    def test_chunking_env_override(self, tmp_path):
+        s = _load(tmp_path, env={
+            "VOICEVOX_CHUNK_CHARS": "100",
+            "VOICEVOX_CHUNK_HARD_MAX": "250",
+            "VOICEVOX_INLINE_CODE_LIMIT": "10",
+        })
+        assert s.get("voicevox.chunkChars").value == 100
+        assert s.get("voicevox.chunkHardMax").value == 250
+        assert s.get("voicevox.inlineCodeLimit").value == 10
+
+    def test_chunking_env_in_env_output(self):
+        """settings.py env が 3 つの新キーを出力する"""
+        r = _run_cli("env")
+        assert r.returncode == 0
+        assert "VOICEVOX_CHUNK_CHARS=" in r.stdout
+        assert "VOICEVOX_CHUNK_HARD_MAX=" in r.stdout
+        assert "VOICEVOX_INLINE_CODE_LIMIT=" in r.stdout

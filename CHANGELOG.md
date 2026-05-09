@@ -20,6 +20,20 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.1.1] - 2026-05-10
+
+### Added
+
+- New settings keys in `vvread.settings.json`: `voicevox.chunkChars`, `voicevox.chunkHardMax`, `voicevox.inlineCodeLimit` — chunking parameters are now configurable via settings file in addition to environment variables.
+- `voicevox.maxChars: 0` now means "no limit" (internally capped at 9999 characters).
+- New words in the English-to-katakana dictionary (`WORD_KANA`): `env`, `schema`, `speaker`.
+
+### Fixed
+
+- `vvread.settings.json` values were silently ignored for Python sub-processes (`sanitize`, `chunk-split`). `settings.py env` now outputs `export VAR=val` so configured values propagate correctly through bash `eval`. This means `maxChars` (and other settings) set in `vvread.settings.json` now take effect as expected.
+
+---
+
 ## [0.1.0] - 2026-05-07
 
 Initial public release.

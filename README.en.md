@@ -202,7 +202,10 @@ Copy [`vvread.settings.example.json`](vvread.settings.example.json) and edit. Mi
     "engineUrl": "http://127.0.0.1:50021",
     "speaker": 3,
     "speed": 1.5,
-    "maxChars": 500
+    "maxChars": 500,   // 0 = no limit (internally capped at 9999)
+    "chunkChars": 200,
+    "chunkHardMax": 400,
+    "inlineCodeLimit": 25
   },
   "log": {
     "level": "INFO"
@@ -234,7 +237,10 @@ Every key in `vvread.settings.json` can also be set through an environment varia
 | `VOICEVOX_PAUSE_SCALE` | `1.0` | Pause-length scale. |
 | `VOICEVOX_PRE_PHONEME` | `0` | Silence before speech (seconds). |
 | `VOICEVOX_POST_PHONEME` | `0` | Silence after speech (seconds). |
-| `VOICEVOX_MAX_CHARS` | `500` | Max input length; excess is truncated. |
+| `VOICEVOX_MAX_CHARS` | `500` | Max input length; excess is truncated. `0` means no limit (internally capped at 9999). |
+| `VOICEVOX_CHUNK_CHARS` | `200` | Target chars per chunk (2nd chunk onward). |
+| `VOICEVOX_CHUNK_HARD_MAX` | `400` | Hard maximum chars per chunk. |
+| `VOICEVOX_INLINE_CODE_LIMIT` | `25` | Max inline-code length before abbreviating. |
 
 #### Logging / notifications
 

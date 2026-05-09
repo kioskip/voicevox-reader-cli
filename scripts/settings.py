@@ -36,6 +36,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from constants import (  # noqa: E402
+    CHUNK_CHARS_DEFAULT,
+    CHUNK_HARD_MAX_DEFAULT,
+    INLINE_CODE_LIMIT_DEFAULT,
+    MAX_CHARS_DEFAULT,
+)
+
 # ---------------------------------------------------------------------------
 # スキーマ定義
 # ---------------------------------------------------------------------------
@@ -52,7 +60,10 @@ SCHEMA: Dict[str, Tuple[Any, Optional[str], type]] = {
     "voicevox.pauseScale":  (1.0,  "VOICEVOX_PAUSE_SCALE", float),
     "voicevox.prePhoneme":  (0.0,  "VOICEVOX_PRE_PHONEME", float),
     "voicevox.postPhoneme": (0.0,  "VOICEVOX_POST_PHONEME", float),
-    "voicevox.maxChars":    (500,  "VOICEVOX_MAX_CHARS", int),
+    "voicevox.maxChars":         (MAX_CHARS_DEFAULT,         "VOICEVOX_MAX_CHARS",         int),
+    "voicevox.chunkChars":       (CHUNK_CHARS_DEFAULT,       "VOICEVOX_CHUNK_CHARS",       int),
+    "voicevox.chunkHardMax":     (CHUNK_HARD_MAX_DEFAULT,    "VOICEVOX_CHUNK_HARD_MAX",    int),
+    "voicevox.inlineCodeLimit":  (INLINE_CODE_LIMIT_DEFAULT, "VOICEVOX_INLINE_CODE_LIMIT", int),
     # ログ
     "log.level":            ("INFO",   "VOICEVOX_LOG_LEVEL", str),
     "log.maxBytes":         (10485760, "VOICEVOX_LOG_MAX_BYTES", int),
@@ -398,7 +409,7 @@ def _cmd_env(args: argparse.Namespace) -> int:
         rv = settings.values[key]
         # 常にシングルクォートで囲む(数値・URLでも安全、将来の特殊文字にも対応)
         val = str(rv.value).replace("'", "'\"'\"'")
-        print(f"{env_var}='{val}'")
+        print(f"export {env_var}='{val}'")
     return 0
 
 
