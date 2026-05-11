@@ -36,8 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from constants import (  # noqa: E402
+from constants import (
     CHUNK_CHARS_DEFAULT,
     CHUNK_HARD_MAX_DEFAULT,
     INLINE_CODE_LIMIT_DEFAULT,

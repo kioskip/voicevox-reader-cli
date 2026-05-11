@@ -20,6 +20,17 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.1.4] - 2026-05-12
+
+### Changed
+
+- `cmd/say.sh` の内部リファクタリング。引数パース・speaker 解決・synth/play チャンクヘルパーを専用ライブラリ（`lib/say_args.sh`、`lib/say_pipeline.sh`）に分離。ユーザー向け挙動の変更はなし。
+- speaker ID 解決（`--speaker` フラグ / `VOICEVOX_SPEAKER` 環境変数 / デフォルト `3`）を `lib/voicevox.sh::voicevox_resolve_speaker` に集約。`vvread say` と `vvread synth` で共用するよう統一。
+- Python ヘルパースクリプトの冗長な `sys.path.insert` を削除。`scripts/__init__.py` を追加（IDE・静的解析ツール向けのパッケージ認識改善）。
+- VOICEVOX 合成パラメータのデフォルト値解決（`VOICEVOX_SPEED`、`VOICEVOX_PITCH` 等）を `lib/voicevox.sh` に集約。`vvread say` / `vvread synth` での重複コードを解消。
+
+---
+
 ## [0.1.3] - 2026-05-11
 
 ### Changed

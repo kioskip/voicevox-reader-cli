@@ -41,9 +41,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# scripts/ 配下を import 可能にする
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
 import dependencies as _deps  # noqa: E402
 import paths as _paths  # noqa: E402

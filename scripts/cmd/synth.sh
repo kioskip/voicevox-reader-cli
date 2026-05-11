@@ -138,30 +138,10 @@ fi
 
 # ===== 発話パラメータ =====
 # settings.py env の eval で VOICEVOX_* は解決済み(env > project > user > default)。
-# 以下の :- は settings.py 失敗時のバックストップ。--speaker は最優先。
+# voicevox_resolve_speaker は settings.py 失敗時のバックストップとして機能する。
+# ENGINE / SPEED_SCALE 等は lib/voicevox.sh が VOICEVOX_* を直読みするため不要(S-006/S-007)。
 
-SPEAKER="${SPEAKER_OVERRIDE:-${VOICEVOX_SPEAKER:-3}}"
-
-# ENGINE / SPEED_SCALE 等は voicevox_synthesize が dynamic scoping で参照する
-# (lib_voicevox.sh のコメント参照)。defaulting はここに集約。
-# S-008: ENGINE_URL (settings.py 解決) → ENGINE (legacy) の順で参照
-# shellcheck disable=SC2034
-ENGINE="${VOICEVOX_ENGINE_URL:-${VOICEVOX_ENGINE:-http://127.0.0.1:50021}}"
-ENGINE="${ENGINE%/}"  # 末尾スラッシュ正規化
-# shellcheck disable=SC2034
-SPEED_SCALE="${VOICEVOX_SPEED:-1.5}"
-# shellcheck disable=SC2034
-PRE_PHONEME="${VOICEVOX_PRE_PHONEME:-0}"
-# shellcheck disable=SC2034
-POST_PHONEME="${VOICEVOX_POST_PHONEME:-0}"
-# shellcheck disable=SC2034
-PITCH_SCALE="${VOICEVOX_PITCH:-0}"
-# shellcheck disable=SC2034
-INTONATION_SCALE="${VOICEVOX_INTONATION:-1.0}"
-# shellcheck disable=SC2034
-VOLUME_SCALE="${VOICEVOX_VOLUME:-1.0}"
-# shellcheck disable=SC2034
-PAUSE_LENGTH_SCALE="${VOICEVOX_PAUSE_SCALE:-1.0}"
+SPEAKER=$(voicevox_resolve_speaker "${SPEAKER_OVERRIDE}")
 
 # ===== 出力先ディレクトリ作成 =====
 

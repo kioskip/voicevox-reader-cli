@@ -14,13 +14,10 @@ import は本ファイル側に局所化されている(S-008 の DIP)。
     echo "整形済テキスト" | chunk_split.py --speaker 3
 """
 import argparse
-import os
 import sys
 from typing import Callable, Optional
 
-# 同ディレクトリの sanitize / cache_patterns を import 可能にする
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sanitize import split_into_chunks  # noqa: E402
+from sanitize import split_into_chunks
 
 
 def _build_is_cacheable(speaker_id: int) -> Callable[[str], bool]:
