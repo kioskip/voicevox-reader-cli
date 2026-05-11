@@ -51,7 +51,8 @@ Usage: vvread on-stop
   `echo '{"transcript_path": "..."}' | vvread on-stop` で疎通確認可能。
 
 設定可能な環境変数:
-  VOICEVOX_ENGINE_URL    health check 先 URL (default http://localhost:50021/version)
+  VOICEVOX_ENGINE_URL    VOICEVOX Engine ベース URL (default http://localhost:50021)
+  VOICEVOX_ENGINE        VOICEVOX_ENGINE_URL の旧エイリアス（後方互換）
   VOICEVOX_SPEAKER       話者 ID (cmd_say に渡される)
   VOICEVOX_SPEED など    発話パラメータ(cmd_say と同じ)
   VVREAD_ON_STOP_TIMEOUT stdin 読込 timeout 秒 (default 10)
@@ -103,8 +104,10 @@ source "${VVREAD_SCRIPTS_DIR}/lib/notify.sh"
 
 # ===== VOICEVOX Engine health check =====
 
-# 旧 on_stop.sh と同じ default URL(version エンドポイントへの 1 秒 ping)
-ENGINE_URL="${VOICEVOX_ENGINE_URL:-http://localhost:50021/version}"
+# S-008: VOICEVOX_ENGINE_URL (settings.py 解決) → VOICEVOX_ENGINE (legacy) の順で参照
+_engine_base="${VOICEVOX_ENGINE_URL:-${VOICEVOX_ENGINE:-http://localhost:50021}}"
+_engine_base="${_engine_base%/}"
+ENGINE_URL="${_engine_base}/version"
 if ! curl -sf -m 1 "${ENGINE_URL}" >/dev/null 2>&1; then
   log_info "engine unreachable url=${ENGINE_URL}"
   notify_error "vvread" "VOICEVOX Engine に接続できません (${ENGINE_URL})"

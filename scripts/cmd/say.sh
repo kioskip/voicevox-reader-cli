@@ -250,7 +250,12 @@ _say_play_chunk() {
 
   # 同期再生。preempt 時の kill で wait は非ゼロ復帰するが、それ自体は異常では
   # なく next chunk の session check で exit 0 する経路に乗る。
-  wait "${pid}" 2>/dev/null || true
+  # T-014: wait_rc を取得してデバッグログに残す（preempt vs 異常終了の区別用）
+  wait "${pid}" 2>/dev/null
+  local wait_rc=$?
+  if [ "${wait_rc}" -ne 0 ]; then
+    log_debug "say player_wait_nonzero chunk=$((idx + 1))/${CHUNK_TOTAL} wait_rc=${wait_rc}"
+  fi
 
   # T-013: PID_FILE が自分の PID のままなら消す。Say-B に上書き済みなら触らない
   # (旧 race: 自分が rm すると後続 Say-C が vvread_kill_play の早期 return で

@@ -40,14 +40,24 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# 整形後テキストの最大文字数。0 は「上限なし」として MAX_CHARS_LIMIT に読み替え
+# 整形後テキストの最大文字数。0 は「上限なし」として MAX_CHARS_LIMIT に読み替え。
+# 負値は不正入力 → MAX_CHARS_LIMIT にフォールバックして stderr に警告を出す。
 _max_chars_raw = _env_int("VOICEVOX_MAX_CHARS", MAX_CHARS_DEFAULT)
-MAX_CHARS = MAX_CHARS_LIMIT if _max_chars_raw == 0 else _max_chars_raw
+if _max_chars_raw < 0:
+    sys.stderr.write(
+        f"vvread: VOICEVOX_MAX_CHARS={_max_chars_raw} は無効な値です"
+        f"（1以上の整数か 0 を指定）。{MAX_CHARS_LIMIT} を使用します。\n"
+    )
+    MAX_CHARS = MAX_CHARS_LIMIT
+elif _max_chars_raw == 0:
+    MAX_CHARS = MAX_CHARS_LIMIT
+else:
+    MAX_CHARS = _max_chars_raw
 
 # インラインコード入力長の上限。これを超えると詳細を読まず「コマンド」または
 # 「ファイル」(末尾が登録済み拡張子の場合)で代用する。辞書ヒットしないトークンが
 # per-char で展開されると暴走するための短縮読み上げ。
-INLINE_CODE_LENGTH_LIMIT = _env_int("VOICEVOX_INLINE_CODE_LIMIT", INLINE_CODE_LIMIT_DEFAULT)
+INLINE_CODE_LIMIT = _env_int("VOICEVOX_INLINE_CODE_LIMIT", INLINE_CODE_LIMIT_DEFAULT)
 
 # 1 チャンクの目安文字数。これを超える場合は境界(改行→句点)で分割する
 CHUNK_CHARS = _env_int("VOICEVOX_CHUNK_CHARS", CHUNK_CHARS_DEFAULT)
@@ -193,13 +203,13 @@ def _is_long_filepath(content: str) -> bool:
     # 長文 + 末尾が EXTENSION_KANA 登録済み拡張子(.md / .sh / .json 等)。
     # 「ファイル」と「コマンド」を区別することで、聞き手が「長いファイルパスが
     # 省略された」のか「コマンドが省略された」のかを把握できるようにする。
-    return len(content) > INLINE_CODE_LENGTH_LIMIT and split_extension(content) is not None
+    return len(content) > INLINE_CODE_LIMIT and split_extension(content) is not None
 
 
 def _is_long_command(content: str) -> bool:
     # 長文 + 拡張子無し → 「コマンド」フォールバック。順序上 _is_long_filepath の
     # 後に置く必要がある(両方 True ならファイル扱いを優先)。
-    return len(content) > INLINE_CODE_LENGTH_LIMIT
+    return len(content) > INLINE_CODE_LIMIT
 
 
 # (predicate, transform) のペア。順序が意味を持つ:

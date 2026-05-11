@@ -24,8 +24,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -35,23 +33,7 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 import settings as _settings  # noqa: E402
-
-# ---------------------------------------------------------------------------
-# HTTP helper（doctor.py と同じシグネチャ。共有ヘルパー化は v0.1.2 では行わない）
-# ---------------------------------------------------------------------------
-
-
-def _http_get(url: str, timeout: float = 3.0) -> Tuple[Optional[str], Optional[str]]:
-    """簡易 HTTP GET。成功時は (text, None)、失敗時は (None, error_msg)"""
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
-            return resp.read().decode("utf-8", errors="replace"), None
-    except urllib.error.URLError as e:
-        return None, f"URL error: {e}"
-    except (TimeoutError, OSError) as e:
-        return None, f"connection error: {e}"
-    except Exception as e:  # noqa: BLE001
-        return None, f"unexpected: {e}"
+from lib_http import http_get as _http_get  # noqa: E402 (R-101)
 
 
 # ---------------------------------------------------------------------------

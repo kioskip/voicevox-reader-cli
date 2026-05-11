@@ -51,7 +51,7 @@ def project(tmp_path):
     shutil.copy(SCRIPTS / "voice.sh", scripts_dir / "voice.sh")
     (scripts_dir / "voice.sh").chmod(0o755)
     (scripts_dir / "lib").mkdir()
-    for libname in ("log.sh", "paths.sh"):
+    for libname in ("log.sh", "os.sh", "paths.sh"):
         shutil.copy(SCRIPTS / "lib" / libname, scripts_dir / "lib" / libname)
 
     return {

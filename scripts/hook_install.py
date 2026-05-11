@@ -47,6 +47,12 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 import json_file as _jf  # noqa: E402
+from lib_prompt import (  # noqa: E402 (R-102)
+    is_tty as _is_tty,
+    prompt_choice as _prompt_choice,
+    prompt_speaker_id as _prompt_speaker_id,
+    prompt_yn as _prompt_yn,
+)
 
 # ---------------------------------------------------------------------------
 # 定数 / 仕様
@@ -560,106 +566,10 @@ def _emit_uninstall(result: UninstallResult) -> None:
     )
 
 
+
 # ---------------------------------------------------------------------------
-# 対話 helper（setup.py と独立実装: 循環 import を避けるため）
+# 対話 helper（R-102: lib_prompt.py に集約、import で参照）
 # ---------------------------------------------------------------------------
-
-
-def _is_tty(stream: Any = None) -> bool:
-    """stream（default: sys.stdin）が TTY かどうか判定する。"""
-    s = stream or sys.stdin
-    isatty = getattr(s, "isatty", lambda: False)
-    try:
-        return bool(isatty())
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _prompt_yn(
-    question: str,
-    default: bool = True,
-    *,
-    in_stream: Any = None,
-    out_stream: Any = None,
-) -> bool:
-    """Y/n プロンプト。"""
-    suffix = "[Y/n]" if default else "[y/N]"
-    out = out_stream or sys.stdout
-    in_ = in_stream or sys.stdin
-    out.write(f"{question} {suffix}: ")
-    out.flush()
-    line = in_.readline()
-    if not line:
-        return default
-    line = line.strip().lower()
-    if not line:
-        return default
-    return line in ("y", "yes", "1", "true")
-
-
-def _prompt_choice(
-    question: str,
-    choices: List[str],
-    default: str,
-    *,
-    in_stream: Any = None,
-    out_stream: Any = None,
-) -> str:
-    """番号付き選択肢プロンプト。Enter でデフォルト。"""
-    out = out_stream or sys.stdout
-    in_ = in_stream or sys.stdin
-    out.write(f"{question}\n")
-    for i, choice in enumerate(choices, 1):
-        marker = "  [default]" if choice == default else ""
-        out.write(f"  {i}) {choice}{marker}\n")
-    while True:
-        out.write(f"選択 [1-{len(choices)}] (Enter で {default!r}): ")
-        out.flush()
-        line = in_.readline()
-        if not line or not line.strip():
-            return default
-        try:
-            idx = int(line.strip())
-            if 1 <= idx <= len(choices):
-                return choices[idx - 1]
-        except ValueError:
-            pass
-        out.write(f"  1 から {len(choices)} の数字を入力してください。\n")
-
-
-def _prompt_speaker_id(
-    question: str,
-    speaker_options: List[str],
-    speaker_ids: List[int],
-    current_id: int,
-    *,
-    in_stream: Any = None,
-    out_stream: Any = None,
-) -> int:
-    """Speaker を style ID で選択するプロンプト。
-
-    一覧は番号付きで表示するが、入力は style ID（数字）で行う。
-    Enter のみで current_id を返す。
-    """
-    out = out_stream or sys.stdout
-    in_ = in_stream or sys.stdin
-    out.write(f"{question}\n")
-    for label in speaker_options:
-        out.write(f"  {label}\n")
-    valid_ids = set(speaker_ids)
-    while True:
-        out.write(f"Speaker ID を入力してください [Enter で {current_id}]: ")
-        out.flush()
-        line = in_.readline()
-        if not line or not line.strip():
-            return current_id
-        try:
-            entered = int(line.strip())
-            if entered in valid_ids:
-                return entered
-            out.write(f"  ID {entered} は存在しません。上のリストの ID を入力してください。\n")
-        except ValueError:
-            out.write("  数字（style ID）を入力してください。\n")
 
 
 def _fetch_speakers_for_install(

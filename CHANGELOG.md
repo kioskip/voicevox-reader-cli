@@ -20,6 +20,25 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.1.3] - 2026-05-11
+
+### Changed
+
+- `VOICEVOX_ENGINE_URL` / `VOICEVOX_ENGINE` の参照方法を統一。`cmd/on_stop.sh` に `VOICEVOX_ENGINE` フォールバックを追加し、デフォルト値から `/version` を除去して呼び出し側で付加するように変更。
+- `lib/voicevox.sh` の `audio_query` / `synthesis` curl 呼び出しに `-m ${VOICEVOX_TIMEOUT:-30}` を追加。エンジン応答停止時の永久ブロックを防止。`VOICEVOX_TIMEOUT` 環境変数で上書き可能（デフォルト 30s）。
+- `scripts/lib/os.sh` を新設し、OS 判定ヘルパーを一元管理。
+- `scripts/lib_http.py` を新設。内部 HTTP GET ヘルパーを一本化。
+- `scripts/lib_prompt.py` を新設。対話 prompt ヘルパーを共通モジュールに集約。
+- `cmd/say.sh` の再生後の wait 終了コードをデバッグログに記録。preempt による中断と player の異常終了を区別できるよう改善。
+- 依存チェック時の subprocess timeout を 5s → 1s に短縮。起動時間の改善。
+
+### Fixed
+
+- `sanitize.py` の定数名 `INLINE_CODE_LENGTH_LIMIT` を `INLINE_CODE_LIMIT` に統一。
+- `VOICEVOX_MAX_CHARS` に負値が渡された場合の挙動を定義。`MAX_CHARS_LIMIT`（9999）にフォールバックし、stderr に警告を出力。
+
+---
+
 ## [0.1.2] - 2026-05-10
 
 ### Added

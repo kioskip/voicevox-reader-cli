@@ -106,9 +106,8 @@ def _on_stop_env(tmp_path: Path, voicevox_url: str, bin_dir: Path,
                  player: str = "afplay") -> dict:
     """on-stop 実行に必要な共通 env。
 
-    VOICEVOX_ENGINE_URL = health check 先 (default は <url>/version の
-    on_stop デフォルトに合わせ /version 付き)。VOICEVOX_ENGINE は cmd_say
-    側が読む base URL。
+    VOICEVOX_ENGINE_URL = ベース URL（on_stop 内で /version を付加）。
+    VOICEVOX_ENGINE = VOICEVOX_ENGINE_URL の旧エイリアス（後方互換）。
 
     VVREAD_PROJECT_DIR を tmp_path に向け、`vvread_migrate_legacy_tmp` が参照
     する `${VVREAD_PROJECT_DIR}/tmp` を不在化(no-op 化)する。代わりに
@@ -117,7 +116,8 @@ def _on_stop_env(tmp_path: Path, voicevox_url: str, bin_dir: Path,
     tmp_path に流入するのを防ぐ(test_voice.py と同じ設計)。
     """
     env = _path_env(tmp_path)
-    env["VOICEVOX_ENGINE_URL"] = f"{voicevox_url}/version"
+    # S-008: VOICEVOX_ENGINE_URL はベース URL。on_stop 内で /version を付加。
+    env["VOICEVOX_ENGINE_URL"] = voicevox_url
     env["VOICEVOX_ENGINE"] = voicevox_url
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
     env["VVREAD_PLAYER"] = player
@@ -218,7 +218,8 @@ class TestEngineHealthCheck:
         """engine 不通でも hook 自体は exit 0(notify_error は出してログだけ)"""
         env = _path_env(tmp_path)
         # 確実に届かないアドレス + 短い curl タイムアウト(1s, on_stop 内蔵)
-        env["VOICEVOX_ENGINE_URL"] = "http://127.0.0.1:1/version"
+        # S-008: ベース URL を渡す。on_stop 内で /version を付加。
+        env["VOICEVOX_ENGINE_URL"] = "http://127.0.0.1:1"
         # 通知抑制 (terminal-notifier が無くても cooldown 制御で安全に no-op)
 
         r = run_on_stop(json.dumps({"transcript_path": "/no/such"}),

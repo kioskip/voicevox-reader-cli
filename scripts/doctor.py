@@ -37,8 +37,6 @@ import re
 import shutil
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -51,6 +49,7 @@ import dependencies as _deps  # noqa: E402
 import paths as _paths  # noqa: E402
 import settings as _settings  # noqa: E402
 from hook_install import is_voiceclaude_hook  # noqa: E402  (drift 防止: R-008)
+from lib_http import http_get as _http_get  # noqa: E402 (R-101)
 
 # ---------------------------------------------------------------------------
 # 共通データ型
@@ -304,17 +303,6 @@ def check_player(scripts_dir: Optional[Path] = None) -> List[CheckItem]:
 # ---------------------------------------------------------------------------
 
 
-def _http_get(url: str, timeout: float = 3.0) -> Tuple[Optional[str], Optional[str]]:
-    """簡易 HTTP GET。成功時は (text, None)、失敗時は (None, error_msg)"""
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
-            return resp.read().decode("utf-8", errors="replace"), None
-    except urllib.error.URLError as e:
-        return None, f"URL error: {e}"
-    except (TimeoutError, OSError) as e:
-        return None, f"connection error: {e}"
-    except Exception as e:  # noqa: BLE001
-        return None, f"unexpected: {e}"
 
 
 def _normalize_engine_base(url: str) -> str:

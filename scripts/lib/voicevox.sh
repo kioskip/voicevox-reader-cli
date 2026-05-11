@@ -28,6 +28,8 @@ voicevox_synthesize() {
   local query_file="${wav}.query.json"
   local tuned_file="${query_file}.tuned"
   local encoded phase_ms rc=0
+  # S-009: engine 応答停止時の永久ブロック防止。呼び出し側で VOICEVOX_TIMEOUT を設定可能。
+  local _vox_timeout="${VOICEVOX_TIMEOUT:-30}"
 
   encoded=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "${text}") || {
     rm -f "${query_file}" "${tuned_file}"
@@ -35,7 +37,7 @@ voicevox_synthesize() {
   }
 
   phase_ms=$(_now_ms)
-  if ! curl -fsS -X POST \
+  if ! curl -fsS -m "${_vox_timeout}" -X POST \
     "${ENGINE}/audio_query?speaker=${speaker}&text=${encoded}" \
     -o "${query_file}"; then
     rc=1
@@ -68,7 +70,7 @@ voicevox_synthesize() {
 
   if [ $rc -eq 0 ]; then
     phase_ms=$(_now_ms)
-    if ! curl -fsS -X POST \
+    if ! curl -fsS -m "${_vox_timeout}" -X POST \
       -H "Content-Type: application/json" \
       -d @"${query_file}" \
       "${ENGINE}/synthesis?speaker=${speaker}" \
