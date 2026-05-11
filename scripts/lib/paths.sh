@@ -16,10 +16,9 @@
 # WSL / Git Bash は Linux と同じ XDG パスにフォールバック(uname -s
 # で Darwin 以外なら全部 Linux 同等扱い、Backlog 確定事項通り)。
 
-# OS 判定。"Darwin" のみ macOS、それ以外は Linux 同等扱い
-_vvread_is_macos() {
-  [ "$(uname -s)" = "Darwin" ]
-}
+# S-010: _vvread_is_macos は lib/os.sh に集約
+# shellcheck source=./os.sh
+source "$(dirname "${BASH_SOURCE[0]}")/os.sh"
 
 # `~` のみ展開する単純な expanduser($VAR は扱わない、Python 側 _expand と整合)。
 # 主に override(VVREAD_*_DIR の値)経由で渡される `~/foo` を展開するためのもの。

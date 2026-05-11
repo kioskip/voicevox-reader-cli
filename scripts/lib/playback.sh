@@ -25,10 +25,9 @@
 # エラー時の warning 出力は lib 側では行わず caller (vvread say / doctor)
 # に任せる。
 
-# OS 判定。Darwin のみ macOS、それ以外は Linux 同等扱い(lib_paths.sh と整合)
-_vvread_is_macos() {
-  [ "$(uname -s)" = "Darwin" ]
-}
+# S-010: _vvread_is_macos は lib/os.sh に集約
+# shellcheck source=./os.sh
+source "$(dirname "${BASH_SOURCE[0]}")/os.sh"
 
 # Linux 系の player 優先順を空白区切りで返す(bash 3.2 互換、配列ではなく文字列)
 _vvread_linux_player_priority() {

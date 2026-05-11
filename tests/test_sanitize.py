@@ -73,7 +73,7 @@ class TestSanitizeCodeAndUrl:
         assert "テスト" in sanitize.sanitize("`テスト`")
 
     def test_inline_code_too_long_becomes_command(self):
-        long = "a" * (sanitize.INLINE_CODE_LENGTH_LIMIT + 5)
+        long = "a" * (sanitize.INLINE_CODE_LIMIT + 5)
         assert "コマンド" in sanitize.sanitize(f"`{long}`")
 
     def test_inline_code_hex_hash_replaced_with_hash_label(self):
@@ -92,7 +92,7 @@ class TestSanitizeCodeAndUrl:
         # 25 文字を超えるインラインコードが、末尾に登録済み拡張子を持つ場合は
         # 「コマンド」ではなく「ファイル」と短く読む(パス内容自体は読み上げない)
         long_path = "doc/worklog/2026-05-01-t005-t003-voice-tests.md"
-        assert len(long_path) > sanitize.INLINE_CODE_LENGTH_LIMIT
+        assert len(long_path) > sanitize.INLINE_CODE_LIMIT
         out = sanitize.sanitize(f"`{long_path}` を更新")
         assert "ファイル" in out
         assert "コマンド" not in out
@@ -110,7 +110,7 @@ class TestSanitizeCodeAndUrl:
     def test_inline_code_long_command_without_extension_remains_command(self):
         # 25 文字超で拡張子無しなら従来通り「コマンド」
         cmd = "pytest tests/test_sanitize.py -v -k some_long_filter"
-        assert len(cmd) > sanitize.INLINE_CODE_LENGTH_LIMIT
+        assert len(cmd) > sanitize.INLINE_CODE_LIMIT
         out = sanitize.sanitize(f"`{cmd}` 実行")
         assert "コマンド" in out
         assert "ファイル" not in out
@@ -118,7 +118,7 @@ class TestSanitizeCodeAndUrl:
     def test_inline_code_unknown_extension_falls_back_to_command(self):
         # EXTENSION_KANA に未登録の拡張子 (.foo) はファイル扱いされず「コマンド」になる
         bogus = "doc/worklog/2026-05-01-t005-t003-voice-tests.foo"
-        assert len(bogus) > sanitize.INLINE_CODE_LENGTH_LIMIT
+        assert len(bogus) > sanitize.INLINE_CODE_LIMIT
         out = sanitize.sanitize(f"`{bogus}` を更新")
         assert "コマンド" in out
         assert "ファイル" not in out
@@ -1148,3 +1148,18 @@ class TestMaxChars:
         )
         assert r.returncode == 0
         assert r.stdout.strip() == str(constants.MAX_CHARS_LIMIT)
+
+    def test_max_chars_negative_resolves_to_limit_with_warning(self):
+        """VOICEVOX_MAX_CHARS=-1 → MAX_CHARS_LIMIT にフォールバックし stderr に警告"""
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("VOICEVOX_")}
+        env["VOICEVOX_MAX_CHARS"] = "-1"
+        r = subprocess.run(
+            [sys.executable, "-c", "import sanitize; print(sanitize.MAX_CHARS)"],
+            capture_output=True, text=True,
+            cwd=str(REPO / "scripts"),
+            env=env,
+        )
+        assert r.returncode == 0
+        assert r.stdout.strip() == str(constants.MAX_CHARS_LIMIT)
+        assert "無効な値" in r.stderr

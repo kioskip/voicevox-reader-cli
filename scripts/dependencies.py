@@ -340,13 +340,13 @@ def check(dep: Dependency) -> CheckResult:
     if not found_path:
         return CheckResult(name=dep.name, found=False)
 
-    # check_command を実行(timeout 5s で安全)
+    # T-015(b): timeout を 1s に短縮(--version 系は通常 100ms 以下)
     try:
         proc = subprocess.run(
             dep.check_command,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=1,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         return CheckResult(

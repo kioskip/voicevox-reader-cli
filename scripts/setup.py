@@ -31,8 +31,6 @@ import os
 import shutil
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -43,6 +41,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import dependencies as _deps  # noqa: E402
 import hook_install as _hi  # noqa: E402
+from lib_http import http_get as _http_get_impl  # noqa: E402 (R-101)
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -155,18 +154,8 @@ def _require_tty_or_yes(ctx: SetupContext) -> Optional[StepResult]:
 
 
 # ---------------------------------------------------------------------------
-# HTTP helper(R-009 doctor から流儀を流用)
+# HTTP helper (R-101: lib_http.http_get を使用)
 # ---------------------------------------------------------------------------
-
-
-def _http_get(url: str, timeout: float = HTTP_TIMEOUT_SEC) -> Optional[str]:
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
-            return resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return None
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def _normalize_engine_base(url: str) -> str:
@@ -180,11 +169,11 @@ def _engine_reachable(url: str) -> Optional[Dict[str, Any]]:
     """engine が応答するなら {version, speakers_count} 程度の情報を返す。
     不通なら None。"""
     base = _normalize_engine_base(url)
-    v = _http_get(f"{base}/version")
+    v, _ = _http_get_impl(f"{base}/version", HTTP_TIMEOUT_SEC)
     if v is None:
         return None
     info: Dict[str, Any] = {"version": v.strip().strip('"')}
-    sp_text = _http_get(f"{base}/speakers")
+    sp_text, _ = _http_get_impl(f"{base}/speakers", HTTP_TIMEOUT_SEC)
     if sp_text:
         try:
             speakers = json.loads(sp_text)
