@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import IO, Any, Dict, List, Optional, Tuple
 
 import json_file as _jf
 from lib_prompt import (
@@ -123,7 +123,7 @@ def _resolve_scope_alias(scope: str) -> Tuple[str, Optional[str]]:
 
 def is_voiceclaude_hook(
     command: str,
-    repo_root: Optional[Path] = None,
+    repo_root: Optional[Path] = None,  # noqa: ARG001
 ) -> bool:
     """command 文字列が voiceClaude の Stop hook を指しているか判定。
 
@@ -131,7 +131,9 @@ def is_voiceclaude_hook(
     - "vvread on-stop" を含む(PATH 経由 or 絶対パス、空白 or タブ区切り)
     - "/bin/vvread" を含み、引数 "on-stop" を含む(クォート有り無しの両対応)
     - "scripts/on_stop.sh" を含む(legacy)
-    - repo_root を指定された場合、そこ配下のスクリプトパスでも一致
+
+    Note: repo_root 引数は後方互換のために残しているが、現在は参照しない。
+    条件 1〜3 で全ケースをカバーしているため、repo_root ベースの条件 4 を削除した。
     """
     if not isinstance(command, str):
         return False
@@ -141,10 +143,6 @@ def is_voiceclaude_hook(
         return True
     if "scripts/on_stop.sh" in command or "/on_stop.sh" in command:
         return True
-    if repo_root is not None:
-        rr = str(repo_root)
-        if rr in command and ("on-stop" in command or "on_stop.sh" in command):
-            return True
     return False
 
 
@@ -262,6 +260,8 @@ def _scan_for_voiceclaude(
             if not is_voiceclaude_hook(cmd, repo_root):
                 continue
             has_vc = True
+            if "scripts/on_stop.sh" in cmd or "/on_stop.sh" in cmd:
+                legacy_cmds.append(cmd)
     return has_vc, legacy_cmds
 
 
@@ -353,10 +353,9 @@ def install(
         result.legacy_detected = True
         result.legacy_commands = legacy_cmds
         result.error = (
-            f"{settings_path}: legacy vvread hook detected "
-            f"({len(legacy_cmds)} entries). Run `vvread uninstall "
-            f"--scope {scope}` first to remove the legacy hook, "
-            f"then run install again."
+            f"{settings_path}: legacy vvread hook (on_stop.sh) が登録されています。\n"
+            "今回は変更していません。\n"
+            f"`vvread uninstall --scope {scope}` を実行してから、改めて install してください。"
         )
         return result
 
@@ -587,6 +586,22 @@ def _fetch_speakers_for_install(
     return None
 
 
+def _ensure_vvread_settings_file(
+    cwd: Path,
+    *,
+    dry_run: bool = False,
+    out: Optional[IO[str]] = None,
+) -> Path:
+    """cwd/vvread.settings.json が存在しなければ空の {} で作成する。"""
+    path = cwd / "vvread.settings.json"
+    if dry_run:
+        if not path.exists() and out is not None:
+            out.write(f"DRY-RUN: would create {path}\n")
+    elif not path.exists():
+        _jf.write_json_atomic(path, {})
+    return path
+
+
 def _write_vvread_settings_speaker(
     cwd: Path,
     speaker_id: int,
@@ -672,15 +687,26 @@ def interactive_install(
     if not _check_err and _check_data is not None:
         try:
             _stop_blocks = _ensure_stop_hooks(_check_data)
-            _has_vc, _ = _scan_for_voiceclaude(_stop_blocks, repo_root)
+            _has_vc, _legacy = _scan_for_voiceclaude(_stop_blocks, repo_root)
         except RuntimeError:
             _has_vc = False
+            _legacy = []
+        if _legacy:
+            out.write(
+                "legacy vvread hook (on_stop.sh) が登録されています。\n"
+                "今回は変更していません。\n"
+                "新しい hook に移行するには、先に以下を実行してください：\n"
+                f"  vvread uninstall --scope {chosen_scope}\n"
+                "その後、改めて vvread install を実行してください。\n\n"
+            )
+            return 0
         if _has_vc:
             out.write(
                 "vvreadはすでに設定済です。\n"
                 "`vvread uninstall`: この場所から設定を消します\n"
                 "`vvread config`: 設定を変更します\n"
             )
+            _ensure_vvread_settings_file(cwd, dry_run=dry_run, out=out)
             return 0
 
     # 3. .claude/ 存在確認
@@ -730,7 +756,7 @@ def interactive_install(
                     continue
                 if st_name != "ノーマル":
                     continue
-                speaker_options.append(f"{st_id}: {sp_name}")
+                speaker_options.append(sp_name)
                 speaker_ids.append(st_id)
 
         if speaker_options:
@@ -763,6 +789,8 @@ def interactive_install(
     if result.error:
         return 1
 
+    _ensure_vvread_settings_file(cwd, dry_run=dry_run, out=out)
+
     # speaker を vvread.settings.json に書き込む
     if selected_speaker is not None and not dry_run:
         _write_vvread_settings_speaker(cwd, selected_speaker)
@@ -785,6 +813,8 @@ def _cmd_install(args: argparse.Namespace) -> int:
         yes=args.yes,
     )
     _emit_install(result)
+    if not result.error:
+        _ensure_vvread_settings_file(Path.cwd(), dry_run=args.dry_run, out=sys.stdout)
     return 1 if result.error else 0
 
 
