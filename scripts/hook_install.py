@@ -41,13 +41,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# scripts/ を sys.path に追加（他 module 直 import 用）
-_SCRIPT_DIR = Path(__file__).resolve().parent
-if str(_SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPT_DIR))
-
-import json_file as _jf  # noqa: E402
-from lib_prompt import (  # noqa: E402 (R-102)
+import json_file as _jf
+from lib_prompt import (
     is_tty as _is_tty,
     prompt_choice as _prompt_choice,
     prompt_speaker_id as _prompt_speaker_id,

@@ -9,27 +9,30 @@
 #
 # 呼び出し前提(同じ shell 内に存在していること):
 #   - lib_log.sh が source 済み(_now_ms / log_debug を使う)
-#   - 以下のローカル/環境変数が解決済み(defaulting は呼び出し側の責務)
-#       ENGINE              VOICEVOX Engine の base URL
-#       SPEED_SCALE         speedScale
-#       PITCH_SCALE         pitchScale
-#       INTONATION_SCALE    intonationScale
-#       VOLUME_SCALE        volumeScale
-#       PAUSE_LENGTH_SCALE  pauseLengthScale
-#       PRE_PHONEME         prePhonemeLength
-#       POST_PHONEME        postPhonemeLength
 #
-# defaulting を lib 側に持たせると呼び出し側 (speak.sh) との二重管理になり、
-# キャッシュキー計算と合成パラメータが drift する事故が起きる。よって本 lib は
-# 値の解決責任を持たず、bash の dynamic scoping で呼び出し元のローカル変数を読む。
+# VOICEVOX_* 環境変数を関数内で直解決する。settings.py が canonical
+# (env > project > user > default)、ここは settings.py 失敗時の safety net。
+# 旧設計では呼び出し側 local 変数(ENGINE / SPEED_SCALE 等)に依存する
+# dynamic scoping を採用していたが、S-006/S-007 で廃止し一元化した。
 
 voicevox_synthesize() {
   local wav="$1" text="$2" speaker="$3" chunk_label="${4:-?}"
   local query_file="${wav}.query.json"
   local tuned_file="${query_file}.tuned"
   local encoded phase_ms rc=0
-  # S-009: engine 応答停止時の永久ブロック防止。呼び出し側で VOICEVOX_TIMEOUT を設定可能。
+  # S-009: engine 応答停止時の永久ブロック防止
   local _vox_timeout="${VOICEVOX_TIMEOUT:-30}"
+  # S-006/S-007: VOICEVOX_* を直解決(settings.py が canonical、ここは fallback)
+  # ENGINE: VOICEVOX_ENGINE_URL > VOICEVOX_ENGINE(legacy, S-008) > default
+  local _engine="${VOICEVOX_ENGINE_URL:-${VOICEVOX_ENGINE:-http://127.0.0.1:50021}}"
+  _engine="${_engine%/}"
+  local _speed="${VOICEVOX_SPEED:-1.5}"
+  local _pre="${VOICEVOX_PRE_PHONEME:-0}"
+  local _post="${VOICEVOX_POST_PHONEME:-0}"
+  local _pitch="${VOICEVOX_PITCH:-0}"
+  local _intonation="${VOICEVOX_INTONATION:-1.0}"
+  local _volume="${VOICEVOX_VOLUME:-1.0}"
+  local _pause="${VOICEVOX_PAUSE_SCALE:-1.0}"
 
   encoded=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "${text}") || {
     rm -f "${query_file}" "${tuned_file}"
@@ -38,7 +41,7 @@ voicevox_synthesize() {
 
   phase_ms=$(_now_ms)
   if ! curl -fsS -m "${_vox_timeout}" -X POST \
-    "${ENGINE}/audio_query?speaker=${speaker}&text=${encoded}" \
+    "${_engine}/audio_query?speaker=${speaker}&text=${encoded}" \
     -o "${query_file}"; then
     rc=1
   else
@@ -47,13 +50,13 @@ voicevox_synthesize() {
 
   if [ $rc -eq 0 ]; then
     if ! jq \
-      --argjson speed "${SPEED_SCALE}" \
-      --argjson pre "${PRE_PHONEME}" \
-      --argjson post "${POST_PHONEME}" \
-      --argjson pitch "${PITCH_SCALE}" \
-      --argjson intonation "${INTONATION_SCALE}" \
-      --argjson volume "${VOLUME_SCALE}" \
-      --argjson pause "${PAUSE_LENGTH_SCALE}" \
+      --argjson speed "${_speed}" \
+      --argjson pre "${_pre}" \
+      --argjson post "${_post}" \
+      --argjson pitch "${_pitch}" \
+      --argjson intonation "${_intonation}" \
+      --argjson volume "${_volume}" \
+      --argjson pause "${_pause}" \
       '.speedScale = $speed
        | .prePhonemeLength = $pre
        | .postPhonemeLength = $post
@@ -73,7 +76,7 @@ voicevox_synthesize() {
     if ! curl -fsS -m "${_vox_timeout}" -X POST \
       -H "Content-Type: application/json" \
       -d @"${query_file}" \
-      "${ENGINE}/synthesis?speaker=${speaker}" \
+      "${_engine}/synthesis?speaker=${speaker}" \
       --output "${wav}"; then
       rc=1
     else
@@ -83,4 +86,13 @@ voicevox_synthesize() {
 
   rm -f "${query_file}" "${tuned_file}"
   return $rc
+}
+
+# SPEAKER 解決ヘルパー。--speaker フラグ値 or VOICEVOX_SPEAKER env or 3。
+# 引数: [<override>]  空 or 未指定なら env/default に fallback。
+# stdout: 決定した speaker ID
+# 注意: speaker ID の形式/存在確認は行わない。VOICEVOX Engine への検証は呼び出し元責務。
+voicevox_resolve_speaker() {
+  local override="${1:-}"
+  printf '%s\n' "${override:-${VOICEVOX_SPEAKER:-3}}"
 }

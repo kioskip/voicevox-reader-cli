@@ -32,13 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# scripts/ を sys.path に追加
-_SCRIPT_DIR = Path(__file__).resolve().parent
-if str(_SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPT_DIR))
-
-import json_file as _jf   # noqa: E402
-import settings as _stg   # noqa: E402
+import json_file as _jf
+import settings as _stg
 
 # ---------------------------------------------------------------------------
 # 編集対象フィールド定義

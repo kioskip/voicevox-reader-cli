@@ -35,9 +35,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# scripts/ を sys.path に追加(他 module 直 import 用)
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
 import dependencies as _deps  # noqa: E402
 import hook_install as _hi  # noqa: E402

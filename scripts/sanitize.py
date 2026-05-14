@@ -13,9 +13,7 @@ import re
 import sys
 from typing import Callable, List, Optional, Tuple
 
-# 同ディレクトリの kana_dict.py を import 可能にする
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from kana_dict import (  # noqa: E402
+from kana_dict import (
     ALPHABET_KANA,
     COUNTER_CHARS,
     DIGIT_KANA,
@@ -23,7 +21,7 @@ from kana_dict import (  # noqa: E402
     SYMBOL_KANA,
     WORD_KANA,
 )
-from constants import (  # noqa: E402
+from constants import (
     CHUNK_CHARS_DEFAULT,
     CHUNK_HARD_MAX_DEFAULT,
     FIRST_CHUNK_CHARS_DEFAULT,

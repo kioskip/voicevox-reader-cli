@@ -27,13 +27,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# scripts/ を sys.path に追加（settings 等を直 import するため）
-_SCRIPT_DIR = Path(__file__).resolve().parent
-if str(_SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPT_DIR))
-
-import settings as _settings  # noqa: E402
-from lib_http import http_get as _http_get  # noqa: E402 (R-101)
+import settings as _settings
+from lib_http import http_get as _http_get
 
 
 # ---------------------------------------------------------------------------

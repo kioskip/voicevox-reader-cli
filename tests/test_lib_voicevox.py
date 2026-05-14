@@ -5,9 +5,9 @@ fixture を使って Python http.server で `/audio_query` / `/synthesis` を
 返す簡易モックサーバーを起動し、そこに lib_voicevox.sh の関数が curl で
 叩きにいく構成。
 
-ENGINE / SPEED_SCALE 等のチューニング値は呼び出し元のローカル変数として
-bash の dynamic scoping で参照される設計なので、テストの bash スクリプト側で
-明示的に定義する。
+VOICEVOX_ENGINE_URL / VOICEVOX_SPEED 等のチューニング値は VOICEVOX_* 環境変数
+として渡す。voicevox_synthesize() が内部で直解決するため、呼び出し側の
+shell 変数(ENGINE / SPEED_SCALE 等)は不要(S-006/S-007)。
 """
 import json
 import os
@@ -54,19 +54,18 @@ mkdir -p "$LOG_DIR"
 source '{LIB_LOG}'
 source '{LIB_VOICEVOX}'
 
-ENGINE='{engine_url}'
-SPEED_SCALE={speed}
-PRE_PHONEME={pre_phoneme}
-POST_PHONEME={post_phoneme}
-PITCH_SCALE={pitch}
-INTONATION_SCALE={intonation}
-VOLUME_SCALE={volume}
-PAUSE_LENGTH_SCALE={pause}
-
 voicevox_synthesize '{wav_path}' '{text}' '{speaker}' '{chunk_label}'
 """
     env = os.environ.copy()
     env["VOICEVOX_LOG_LEVEL"] = "DEBUG"  # audio_query / synthesis ログを出させる
+    env["VOICEVOX_ENGINE_URL"] = engine_url
+    env["VOICEVOX_SPEED"] = speed
+    env["VOICEVOX_PRE_PHONEME"] = pre_phoneme
+    env["VOICEVOX_POST_PHONEME"] = post_phoneme
+    env["VOICEVOX_PITCH"] = pitch
+    env["VOICEVOX_INTONATION"] = intonation
+    env["VOICEVOX_VOLUME"] = volume
+    env["VOICEVOX_PAUSE_SCALE"] = pause
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -144,6 +143,67 @@ class TestVoicevoxSynthesizeSuccess:
         assert body["pitchScale"] == 0.05
         assert body["volumeScale"] == 1.2
         assert body["pauseLengthScale"] == 0.8
+
+    def test_speed_via_env_var(self, voicevox_mock, tmp_path):
+        """VOICEVOX_SPEED 環境変数で speedScale が反映される(S-006/S-007)"""
+        wav = tmp_path / "out.wav"
+        _run_synthesize(
+            wav_path=wav,
+            text="テスト",
+            speaker="3",
+            chunk_label="1/1",
+            engine_url=voicevox_mock["url"],
+            tmp_dir=tmp_path,
+            speed="2.0",
+        )
+        synth = voicevox_mock["state"].requests[1]
+        body = json.loads(synth["body"])
+        assert body["speedScale"] == 2.0
+
+    def test_does_not_read_caller_speed_scale(self, voicevox_mock, tmp_path):
+        """呼び出し側の SPEED_SCALE shell 変数に依存しないことの回帰防止テスト(S-006/S-007)。
+        bash script 内で SPEED_SCALE=9.9 を設定しても VOICEVOX_SPEED=1.5 が使われる。
+        voicevox_synthesize は SPEED_SCALE を参照しないので 9.9 は出てこない。
+        """
+        wav = tmp_path / "out.wav"
+        script = f"""
+set -e
+LOG_NAME=test
+LOG_DIR='{tmp_path}/logs'
+mkdir -p "$LOG_DIR"
+source '{LIB_LOG}'
+source '{LIB_VOICEVOX}'
+SPEED_SCALE=9.9
+voicevox_synthesize '{wav}' 'テスト' '3' '1/1'
+"""
+        env = os.environ.copy()
+        env["VOICEVOX_ENGINE_URL"] = voicevox_mock["url"]
+        env["VOICEVOX_SPEED"] = "1.5"
+        r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        synth = voicevox_mock["state"].requests[1]
+        body = json.loads(synth["body"])
+        assert body["speedScale"] == 1.5, f"SPEED_SCALE=9.9 が漏れている: {body['speedScale']}"
+
+    def test_engine_url_takes_priority_over_engine(self, voicevox_mock, tmp_path):
+        """VOICEVOX_ENGINE_URL が VOICEVOX_ENGINE より優先される(S-008 legacy fallback)"""
+        wav = tmp_path / "out.wav"
+        # VOICEVOX_ENGINE に到達不能 URL を設定し、VOICEVOX_ENGINE_URL が勝つことを確認
+        script = f"""
+set -e
+LOG_NAME=test
+LOG_DIR='{tmp_path}/logs'
+mkdir -p "$LOG_DIR"
+source '{LIB_LOG}'
+source '{LIB_VOICEVOX}'
+voicevox_synthesize '{wav}' 'テスト' '3' '1/1'
+"""
+        env = os.environ.copy()
+        env["VOICEVOX_ENGINE_URL"] = voicevox_mock["url"]
+        env["VOICEVOX_ENGINE"] = "http://127.0.0.1:1"  # 到達不能
+        r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+        assert r.returncode == 0, f"VOICEVOX_ENGINE_URL が優先されなかった: stderr={r.stderr}"
+        assert wav.exists()
 
     def test_japanese_text_url_encoded(self, voicevox_mock, tmp_path):
         wav = tmp_path / "out.wav"
