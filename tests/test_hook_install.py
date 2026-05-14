@@ -99,6 +99,14 @@ class TestHookDetection:
         cmd = f"{rr}/scripts/on_stop.sh"
         assert hi.is_voiceclaude_hook(cmd, repo_root=rr)
 
+    def test_repo_root_path_alone_does_not_match(self, tmp_path):
+        """F-102 回帰: repo_root パスを含むが /bin/vvread も on_stop.sh も含まない
+        コマンドは誤検知されない"""
+        rr = tmp_path / "repo"
+        rr.mkdir()
+        cmd = f"some-other-tool --label on-stop --workdir {rr}/data"
+        assert not hi.is_voiceclaude_hook(cmd, repo_root=rr)
+
 
 # ---------------------------------------------------------------------------
 # build_hook_command
@@ -796,3 +804,179 @@ class TestInteractiveInstall:
         assert rc == 0
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         assert data["voicevox"]["speaker"] == 5
+
+
+# ---------------------------------------------------------------------------
+# F-105: install 後に vvread.settings.json が作成されること
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureVvreadSettingsFile:
+    def test_already_installed_creates_vvread_settings_when_missing(self, tmp_path):
+        """already-installed ケースでも vvread.settings.json が作成される"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        hi.install(scope="project-local", cwd=cwd, home=home, repo_root=repo)
+        vvread_settings = cwd / "vvread.settings.json"
+        vvread_settings.unlink(missing_ok=True)  # 存在しない状態にする
+
+        out = io.StringIO()
+        in_stream = _tty_stream("\n")
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+        )
+        assert rc == 0
+        assert vvread_settings.exists()
+
+    def test_fresh_install_creates_vvread_settings_when_missing(self, tmp_path):
+        """fresh install（VOICEVOX 未起動）後に vvread.settings.json が作成される"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        vvread_settings = cwd / "vvread.settings.json"
+        assert not vvread_settings.exists()
+
+        out = io.StringIO()
+        in_stream = _tty_stream("\n\n")
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+        )
+        assert rc == 0
+        assert vvread_settings.exists()
+
+    def test_yes_install_creates_vvread_settings_when_missing(self, tmp_path, monkeypatch):
+        """--yes 非対話パスでも vvread.settings.json が作成される"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        monkeypatch.chdir(cwd)
+        vvread_settings = cwd / "vvread.settings.json"
+        assert not vvread_settings.exists()
+
+        argv = ["install", "--yes", "--scope", "project-local"]
+        rc = hi.main(argv)
+        assert rc == 0
+        assert vvread_settings.exists()
+
+    def test_install_does_not_overwrite_existing_vvread_settings(self, tmp_path):
+        """既存の vvread.settings.json は上書きしない"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        vvread_settings = cwd / "vvread.settings.json"
+        original = {"voicevox": {"speaker": 99}}
+        vvread_settings.write_text(json.dumps(original), encoding="utf-8")
+
+        out = io.StringIO()
+        in_stream = _tty_stream("\n\n")
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+        )
+        assert rc == 0
+        data = json.loads(vvread_settings.read_text(encoding="utf-8"))
+        assert data["voicevox"]["speaker"] == 99
+
+    def test_dry_run_does_not_create_vvread_settings(self, tmp_path):
+        """dry-run では vvread.settings.json を作成しない"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        vvread_settings = cwd / "vvread.settings.json"
+
+        out = io.StringIO()
+        in_stream = _tty_stream("\n\n")
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+            dry_run=True,
+        )
+        assert rc == 0
+        assert not vvread_settings.exists()
+        assert "DRY-RUN" in out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# F-103: legacy on_stop.sh hook の検出テスト
+# ---------------------------------------------------------------------------
+
+
+def _write_legacy_settings(path: Path, legacy_cmd: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "hooks": {
+            "Stop": [
+                {"matcher": "", "hooks": [{"type": "command", "command": legacy_cmd}]}
+            ]
+        }
+    }
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+class TestScanForVoiceclaude:
+    def test_legacy_cmds_populated_on_on_stop_sh(self, tmp_path):
+        """_scan_for_voiceclaude が on_stop.sh hook を検出したら legacy_cmds に追加する"""
+        rr = tmp_path / "repo"
+        rr.mkdir()
+        stop_blocks = [
+            {"matcher": "", "hooks": [{"type": "command", "command": f"{rr}/scripts/on_stop.sh"}]}
+        ]
+        has_vc, legacy_cmds = hi._scan_for_voiceclaude(stop_blocks, rr)
+        assert has_vc
+        assert len(legacy_cmds) == 1
+        assert "on_stop.sh" in legacy_cmds[0]
+
+    def test_modern_hook_not_added_to_legacy_cmds(self, tmp_path):
+        """modern vvread on-stop は legacy_cmds に含まれない"""
+        stop_blocks = [
+            {"matcher": "", "hooks": [{"type": "command", "command": "/path/bin/vvread on-stop"}]}
+        ]
+        has_vc, legacy_cmds = hi._scan_for_voiceclaude(stop_blocks)
+        assert has_vc
+        assert len(legacy_cmds) == 0
+
+
+class TestInstallLegacy:
+    def test_install_returns_error_and_no_change_on_legacy_hook(self, tmp_path):
+        """install() が legacy hook 検出時にエラーを返し、変更・bak が作られないこと"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        settings_path = cwd / ".claude" / "settings.local.json"
+        _write_legacy_settings(settings_path, f"{repo}/scripts/on_stop.sh")
+
+        result = hi.install(scope="project-local", cwd=cwd, home=home, repo_root=repo)
+
+        assert result.legacy_detected
+        assert result.error is not None
+        assert "on_stop.sh" in result.error
+        assert "今回は変更していません" in result.error
+        assert result.changed is False
+        assert not (cwd / ".claude" / "settings.local.json.bak").exists()
+
+    def test_interactive_install_warns_and_exits_on_legacy_hook(self, tmp_path):
+        """interactive_install() が legacy hook 検出時に案内メッセージを出して終了する"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        settings_path = cwd / ".claude" / "settings.local.json"
+        _write_legacy_settings(settings_path, f"{repo}/scripts/on_stop.sh")
+        (cwd / "vvread.settings.json").write_text(
+            json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
+            encoding="utf-8",
+        )
+
+        out = io.StringIO()
+        in_stream = _tty_stream("\n")  # scope 選択で Enter のみ
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+        )
+
+        assert rc == 0
+        output = out.getvalue()
+        assert "今回は変更していません" in output
+        assert "vvread uninstall" in output

@@ -20,6 +20,17 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.1.5] - 2026-05-15
+
+### Fixed
+
+- `vvread install` の speaker 選択リストで、左に表示される番号が表示順の連番になっていた問題を修正。正しい style ID が表示されるようになり、入力値と一致するようになった。
+- `is_voiceclaude_hook()` の判定条件に `repo_root` パスを用いた過剰一致ロジックが含まれており、別ツールの hook を誤検知する潜在リスクがあった。該当条件を削除し、残る条件のみで全ケースをカバーするよう修正。
+- legacy `on_stop.sh` hook が登録済みの環境で `vvread install` を実行すると「すでに設定済」と表示されてインストールがスキップされていた問題を修正。legacy hook を正しく検出し、アンインストール手順をユーザーへ案内するよう改善。
+- `vvread install` 完了後に `vvread config` を実行すると「No vvread settings file found」エラーになる問題を修正。already-installed / fresh install（VOICEVOX 未起動）/ `--yes` 非対話パスのいずれでも `vvread.settings.json` が作成されるよう改善。
+
+---
+
 ## [0.1.4] - 2026-05-12
 
 ### Changed

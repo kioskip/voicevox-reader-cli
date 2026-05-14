@@ -90,14 +90,18 @@ def prompt_speaker_id(
 ) -> int:
     """Speaker を style ID で選択するプロンプト。
 
-    一覧は番号付きで表示するが、入力は style ID（数字）で行う。
+    一覧は style ID を左端に表示し、入力も style ID（数字）で行う。
     Enter のみで current_id を返す。
     """
+    if len(speaker_ids) != len(speaker_options):
+        raise RuntimeError(
+            f"speaker_ids ({len(speaker_ids)}) と speaker_options ({len(speaker_options)}) の長さ不一致"
+        )
     out = out_stream or sys.stdout
     in_ = in_stream or sys.stdin
     out.write(f"{question}\n")
-    for i, opt in enumerate(speaker_options, 1):
-        out.write(f"  {i}) {opt}\n")
+    for sid, opt in zip(speaker_ids, speaker_options):
+        out.write(f"  {sid}) {opt}\n")
     while True:
         out.write(f"Style ID を入力 (Enter で現在値 {current_id} を維持): ")
         out.flush()
