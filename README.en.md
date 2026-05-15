@@ -97,7 +97,7 @@ Default URL: `http://127.0.0.1:50021` (override via `VOICEVOX_ENGINE_URL` or `vv
 vvread setup
 
 # 2. Smoke test
-vvread say "テスト"
+vvread "テスト"
 
 # 3. Health check
 vvread doctor
@@ -113,7 +113,10 @@ After this, starting Claude Code will automatically speak each response aloud.
 
 | Command | Description |
 |---|---|
-| `vvread say <text> [--speaker N]` | Synthesize and play once. |
+| `vvread <text> [--speaker N]` | Synthesize and play text directly. |
+| `vvread file <path> [--speaker N]` | Read a file aloud. |
+| `cat file \| vvread [--speaker N]` | Read stdin aloud (piped input only). |
+| `vvread say <text> [--speaker N]` | Same as above; legacy compatible form. |
 | `vvread synth <text> --output FILE [--speaker N]` | Synthesize only. Writes wav to `FILE` (does not play). |
 | `vvread play <wav>` | Play an existing wav file. |
 | `vvread on-stop` | Entry point for Claude Code's Stop hook (do not invoke manually). |
@@ -121,10 +124,18 @@ After this, starting Claude Code will automatically speak each response aloud.
 #### Examples
 
 ```bash
-vvread say "ビルドが完了しました"
+vvread "ビルドが完了しました"
+vvread file /tmp/summary.txt
+cat build.log | vvread
 vvread synth "おはようございます" --output morning.wav --speaker 1
 vvread play morning.wav
 ```
+
+#### Notes
+
+- **Subcommand names are never treated as text.** `vvread doctor` runs the doctor command; to speak the word "doctor", use `vvread say "doctor"`.
+- **Options must come after the text.** `vvread "hello" --speaker 8` works; `vvread --speaker 8 "hello"` does not.
+- **Only explicit pipe input is detected.** `cat file | vvread` works; redirect (`vvread < file`) is not supported — use `vvread file <path>` instead.
 
 ### 5-2. Control
 

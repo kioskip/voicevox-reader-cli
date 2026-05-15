@@ -13,6 +13,8 @@ prefetch / 並列合成は R-005 のスコープ外。本テストでも逐次 (
 import os
 import subprocess
 import time
+
+import pytest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -472,3 +474,172 @@ class TestVvreadDispatch:
         r = run_vvread_say(env_extra=_path_env(tmp_path))
         assert r.returncode == 1
         assert "Usage: vvread say" in r.stderr
+
+
+# ---------------------------------------------------------------------------
+# root コマンド入力モード (B-102 / B-002)
+# ---------------------------------------------------------------------------
+
+
+def run_vvread(*args, env_extra=None, stdin_text=None, timeout=30) -> subprocess.CompletedProcess:
+    """bin/vvread を直接呼ぶ。
+    stdin_text を渡すと subprocess が stdin を pipe として接続する。
+    None の場合は subprocess.DEVNULL を渡し、pipe 判定 ([ -p /dev/stdin ]) を避ける。
+    """
+    kwargs: dict = dict(
+        env=_clean_env(env_extra),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if stdin_text is not None:
+        kwargs["input"] = stdin_text
+    else:
+        kwargs["stdin"] = subprocess.DEVNULL
+    return subprocess.run([str(VVREAD), *args], **kwargs)
+
+
+class TestRootInputModes:
+    """vvread <text> / cat | vvread の root dispatch テスト。"""
+
+    def test_root_text_basic(self, voicevox_mock, tmp_path):
+        """vvread "hello" → say と同じパイプラインで synth/play される。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "ran.marker"
+        make_fake_player(bin_dir, "afplay", touch_on_run=marker, exit_code=0)
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_vvread("hello", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        assert marker.exists()
+
+    def test_root_text_with_speaker(self, voicevox_mock, tmp_path):
+        """vvread "hello" --speaker 11 → speaker=11 で合成。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_vvread("hello", "--speaker", "11", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        for req in voicevox_mock["state"].requests:
+            assert "speaker=11" in req["path"]
+
+    def test_root_text_command_name_dispatches_to_subcommand(self, tmp_path):
+        """vvread "say" → "say" は subcommand 名なので say subcommand として dispatch。
+        引数なしなので say の usage (exit 1) になる。"""
+        r = run_vvread("say", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "Usage: vvread say" in r.stderr
+
+    def test_root_no_args_tty_shows_usage(self, tmp_path):
+        """vvread (引数なし、TTY) → usage (exit 1)。
+        stdin_text=None の場合 subprocess は stdin を pipe せず TTY 扱いにはならないが、
+        [ -t 0 ] は pytest 実行中でも偽になりうる。ここでは exit 1 だけ検証。"""
+        r = run_vvread(env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+
+    def test_root_stdin_piped(self, voicevox_mock, tmp_path):
+        """echo "hello" | vvread → stdin を読み上げる。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "ran.marker"
+        make_fake_player(bin_dir, "afplay", touch_on_run=marker, exit_code=0)
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_vvread(env_extra=env, stdin_text="hello")
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        assert marker.exists()
+
+    def test_root_stdin_with_speaker(self, voicevox_mock, tmp_path):
+        """echo "text" | vvread --speaker 10 → speaker=10 で合成。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_vvread("--speaker", "10", env_extra=env, stdin_text="hello")
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        for req in voicevox_mock["state"].requests:
+            assert "speaker=10" in req["path"]
+
+    def test_root_stdin_empty_exits_1(self, tmp_path):
+        """stdin が空 → exit 1, 'stdin is empty'。"""
+        r = run_vvread(env_extra=_path_env(tmp_path), stdin_text="")
+        assert r.returncode == 1
+        assert "stdin is empty" in r.stderr
+
+
+# ---------------------------------------------------------------------------
+# vvread file subcommand (B-002)
+# ---------------------------------------------------------------------------
+
+
+class TestFileSubcommand:
+    """vvread file <path> のテスト。"""
+
+    def test_file_basic(self, voicevox_mock, tmp_path):
+        """vvread file path.txt → ファイル内容を synth/play。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker = tmp_path / "ran.marker"
+        make_fake_player(bin_dir, "afplay", touch_on_run=marker, exit_code=0)
+
+        input_file = tmp_path / "input.txt"
+        input_file.write_text("こんにちは")
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_vvread("file", str(input_file), env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        assert marker.exists()
+
+    def test_file_with_speaker(self, voicevox_mock, tmp_path):
+        """vvread file path.txt --speaker 8 → speaker=8 で合成。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        input_file = tmp_path / "input.txt"
+        input_file.write_text("テスト")
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_vvread("file", str(input_file), "--speaker", "8", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        for req in voicevox_mock["state"].requests:
+            assert "speaker=8" in req["path"]
+
+    def test_file_no_arg_exits_1(self, tmp_path):
+        """vvread file (引数なし) → exit 1, '<file> is required'。"""
+        r = run_vvread("file", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "<file> is required" in r.stderr
+
+    def test_file_not_found_exits_1(self, tmp_path):
+        """存在しないファイル → exit 1, 'file not found'。"""
+        r = run_vvread("file", str(tmp_path / "nonexistent.txt"),
+                       env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "file not found" in r.stderr
+
+    def test_file_empty_exits_1(self, tmp_path):
+        """空ファイル → exit 1, 'file is empty'。"""
+        empty = tmp_path / "empty.txt"
+        empty.write_text("")
+
+        r = run_vvread("file", str(empty), env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "file is empty" in r.stderr
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root では chmod 0000 が無効")
+    def test_file_not_readable_exits_1(self, tmp_path):
+        """読み取り不可ファイル → exit 1, 'file not readable'。POSIX のみ有効。"""
+        unreadable = tmp_path / "unreadable.txt"
+        unreadable.write_text("content")
+        unreadable.chmod(0o000)
+        try:
+            r = run_vvread("file", str(unreadable), env_extra=_path_env(tmp_path))
+            assert r.returncode == 1
+            assert "file not readable" in r.stderr
+        finally:
+            unreadable.chmod(0o644)
