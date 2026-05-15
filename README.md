@@ -98,7 +98,7 @@ vvread doctor
 vvread setup
 
 # 2. 動作確認
-vvread say "テスト"
+vvread "テスト"
 
 # 3. ヘルスチェック
 vvread doctor
@@ -114,7 +114,10 @@ vvread doctor
 
 | コマンド | 説明 |
 |---|---|
-| `vvread say <text> [--speaker N]` | テキストを 1 度合成して再生 |
+| `vvread <text> [--speaker N]` | テキストを直接読み上げ |
+| `vvread file <path> [--speaker N]` | ファイルの内容を読み上げ |
+| `cat file \| vvread [--speaker N]` | stdin を読み上げ（パイプ入力のみ対応） |
+| `vvread say <text> [--speaker N]` | テキストを合成して再生（互換形式） |
 | `vvread synth <text> --output FILE [--speaker N]` | 合成のみ。wav を FILE に書き出す（再生しない） |
 | `vvread play <wav>` | 既存 wav を再生 |
 | `vvread on-stop` | Claude Code の Stop hook 用エントリ（手動では呼ばない） |
@@ -122,10 +125,18 @@ vvread doctor
 #### 例
 
 ```bash
-vvread say "ビルドが完了しました"
+vvread "ビルドが完了しました"
+vvread file /tmp/summary.txt
+cat build.log | vvread
 vvread synth "おはようございます" --output morning.wav --speaker 1
 vvread play morning.wav
 ```
+
+#### 注意事項
+
+- **subcommand 名はテキストとして扱われません。** `vvread doctor` は doctor コマンドを実行します。"doctor" という文字列を読み上げたい場合は `vvread say "doctor"` と明示してください。
+- **オプションはテキストの後ろに指定してください。** `vvread "こんにちは" --speaker 8` は動作しますが、`vvread --speaker 8 "こんにちは"` は非対応です。
+- **対応するのは明示的なパイプ入力のみです。** `cat file | vvread` は動作しますが、リダイレクト（`vvread < file`）は非対応です。ファイルを渡す場合は `vvread file <path>` を使用してください。
 
 ### 5-2. 制御系
 

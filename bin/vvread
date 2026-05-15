@@ -39,10 +39,13 @@ export VVREAD_BIN_DIR VVREAD_PROJECT_DIR VVREAD_SCRIPTS_DIR
 
 usage() {
   cat >&2 <<'EOF'
-Usage: vvread <command> [args...]
+Usage: vvread [<text>] [--speaker N]
+       vvread <command> [args...]
 
-発話系:
-  say <text>                    テキストを合成して再生
+発話系（直接テキスト・パイプ対応）:
+  <text>                        テキストを読み上げる（位置引数）
+  file <path>                   ファイルを読み上げる
+  say <text>                    テキストを読み上げる（互換形式）
   synth <text> --output FILE    合成のみ。wav を FILE に書き出す
   play <wav>                    既存 wav を再生
   on-stop                       Claude Code Stop hook 用エントリ
@@ -66,7 +69,25 @@ Usage: vvread <command> [args...]
 
 ヘルプ:
   -h, --help, help              この usage を表示
+
+注意:
+  コマンド名と同じ文字列を読み上げる場合は say を使用:
+    vvread say "say"      # "say" というテキスト
+    vvread say "doctor"   # "doctor" というテキスト
 EOF
+}
+
+# ===== subcommand 判定 =====
+# NOTE: 新しい subcommand を追加したら必ずここも更新すること
+_is_subcommand() {
+  case "$1" in
+    help|-h|--help|say|synth|play|on-stop|stop|mute|off|on|status|clean|install|uninstall|doctor|setup|speakers|config|edit|file)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 # ===== 未実装 stub =====
@@ -82,13 +103,31 @@ cmd_not_implemented() {
 
 # ===== dispatch =====
 
-if [ $# -eq 0 ]; then
-  usage
-  exit 1
+# stdin が pipe されているか判定（[ -p /dev/stdin ] で named pipe のみ検出）
+# [ -t 0 ] は redirect や /dev/null でも偽になるため、より正確な pipe 判定を使う
+_stdin_is_piped=false
+if [ -p /dev/stdin ]; then
+  _stdin_is_piped=true
 fi
 
-subcommand="$1"
-shift
+if [ $# -eq 0 ]; then
+  if ${_stdin_is_piped}; then
+    # stdin が piped で引数なし → stdin 読み上げ
+    subcommand="__stdin__"
+  else
+    usage
+    exit 1
+  fi
+else
+  subcommand="$1"
+  if ${_stdin_is_piped} && ! _is_subcommand "${subcommand}"; then
+    # stdin piped + 先頭引数が subcommand でない (--speaker 等) → stdin + say options
+    subcommand="__stdin__"
+    # shift しない: $@ をそのまま say.sh に渡す
+  else
+    shift
+  fi
+fi
 
 case "${subcommand}" in
   -h|--help|help)
@@ -100,6 +139,19 @@ case "${subcommand}" in
     exec "${VVREAD_SCRIPTS_DIR}/voice.sh" "${subcommand}" "$@"
     ;;
   # 発話系
+  __stdin__)
+    # stdin から読み上げ。$@ は say options (--speaker 等)
+    _stdin_text=$(cat) || true
+    # NOTE: $(cat) は末尾改行を削除。読み上げ用途では許容。
+    if [ -z "${_stdin_text}" ]; then
+      printf 'vvread: stdin is empty\n' >&2
+      exit 1
+    fi
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/say.sh" "${_stdin_text}" "$@"
+    ;;
+  file)
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/file.sh" "$@"
+    ;;
   say)
     exec "${VVREAD_SCRIPTS_DIR}/cmd/say.sh" "$@"
     ;;
@@ -131,8 +183,12 @@ case "${subcommand}" in
     exec "${VVREAD_SCRIPTS_DIR}/cmd/config.sh" "$@"
     ;;
   *)
-    printf 'vvread: unknown command: %s\n' "${subcommand}" >&2
-    printf 'Run `vvread --help` for usage.\n' >&2
-    exit 1
+    if _is_subcommand "${subcommand}"; then
+      # _is_subcommand=true なのに case に落ちた = 実装漏れ
+      printf 'vvread: %s: not yet implemented\n' "${subcommand}" >&2
+      exit 2
+    fi
+    # subcommand でない → テキストとして say に委譲
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/say.sh" "${subcommand}" "$@"
     ;;
 esac

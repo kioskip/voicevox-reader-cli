@@ -20,6 +20,23 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.2.0] - 2026-05-16
+
+### Added
+
+- `vvread <text> [--speaker N]`: root コマンドで直接テキストを読み上げられるようになった。`vvread say "..."` と等価なショートハンド。
+- `vvread file <path> [--speaker N]`: ファイルの内容を読み上げる新 subcommand を追加。ファイル検証（存在・読み取り可否・空ファイル）を行ったうえで `cmd/say.sh` に委譲する。
+- `cat file | vvread [--speaker N]`: パイプ入力（stdin）を自動検出して読み上げる。`[ -p /dev/stdin ]` で named pipe のみ判定するため、redirect や pytest 環境では誤検知しない。
+
+### Changed
+
+- **【変更】** `vvread` に存在しないコマンド名を渡しても、エラーではなくテキストとして読み上げるようになった。たとえば `vvread typo` は "typo" を読み上げる。コマンド名を誤入力してもエラーにならない点に注意。
+- `bin/vvread` の dispatch ロジックを全面改訂。`_is_subcommand()` ヘルパーを新設し、既知の subcommand と直接テキスト入力・stdin の3経路を明確に分離。
+- README / help を新 CLI 形式に更新。subcommand 名との衝突・option 順序・redirect 非対応の3点の注意事項を追記。
+- README から「v0.1/v0.2 候補」等のバージョン表記および付録セクションを削除。
+
+---
+
 ## [0.1.6] - 2026-05-15
 
 ### Added

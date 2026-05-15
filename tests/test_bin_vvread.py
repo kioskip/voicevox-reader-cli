@@ -40,6 +40,7 @@ def run_vvread(*args, env_extra=None, cwd=None) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         cwd=cwd,
+        stdin=subprocess.DEVNULL,  # pipe 判定 ([ -p /dev/stdin ]) を避ける
     )
 
 
@@ -87,15 +88,12 @@ class TestHelp:
 
 
 class TestUnknownCommand:
-    def test_unknown_command_exits_1(self):
-        r = run_vvread("bogus_command_xyz")
-        assert r.returncode == 1
-        assert "unknown command" in r.stderr
-        assert "bogus_command_xyz" in r.stderr
-
-    def test_unknown_command_points_to_help(self):
-        r = run_vvread("nonexistent")
-        assert "vvread --help" in r.stderr
+    def test_unknown_string_dispatches_to_say_not_error(self, tmp_path):
+        """不明な文字列は say にテキストとして委譲される（B-002/B-102 設計変更）。
+        "unknown command" エラーは発生しない。VOICEVOX 未起動で say が失敗しても
+        dispatch ロジック自体は正しい（"unknown command" が出ないことで確認）。"""
+        r = run_vvread("bogus_command_xyz", env_extra=_path_env(tmp_path))
+        assert "unknown command" not in r.stderr
 
 
 # ---------------------------------------------------------------------------
