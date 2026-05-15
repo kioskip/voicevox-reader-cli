@@ -145,7 +145,7 @@ vvread play morning.wav
 | `vvread install [--scope SCOPE] [--yes] [--dry-run]` | Register the Claude Code hook interactively (TTY) or with `--yes` for non-interactive use. |
 | `vvread uninstall [--scope SCOPE]` | Unregister the hook. |
 | `vvread speakers` | List available speaker/style IDs from the VOICEVOX Engine. |
-| `vvread config` / `vvread edit` | Interactively edit `vvread.settings.json` (TTY required). |
+| `vvread config [--create] [--dry-run]` / `vvread edit` | Interactively edit `vvread.settings.json` (TTY required). `--create` creates the file if it doesn't exist before opening the editor; `--dry-run` previews changes without saving. |
 | `vvread doctor [--offline]` | Health check. |
 
 #### `--scope` values

@@ -674,29 +674,161 @@ def _tty_stream(content: str) -> io.StringIO:
 
 
 class TestInteractiveInstall:
-    def test_already_registered_exits_early(self, tmp_path):
-        """scope 選択後、既に登録済みなら対話を打ち切って exit 0"""
+    def test_shows_hook_status_table(self, tmp_path):
+        """install 開始時に全 scope の hook 状況テーブルが表示される"""
         cwd, home = _make_dirs(tmp_path)
         repo = tmp_path / "repo"
         repo.mkdir()
-        import json
         (cwd / "vvread.settings.json").write_text(
             json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
             encoding="utf-8",
         )
-        # 先に hook を登録しておく
+        out = io.StringIO()
+        in_stream = _tty_stream("\n\n")
+        hi.interactive_install(cwd=cwd, home=home, repo_root=repo,
+                               in_stream=in_stream, out_stream=out)
+        output = out.getvalue()
+        assert "Claude Code hook 状況:" in output
+        assert "user" in output
+        assert "project" in output
+        assert "project-local" in output
+
+    def test_already_registered_shows_message_and_proceeds_to_step2(self, tmp_path):
+        """登録済みなら scope 選択をスキップし、Step 2 に進む"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (cwd / "vvread.settings.json").write_text(
+            json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
+            encoding="utf-8",
+        )
         hi.install(scope="project-local", cwd=cwd, home=home, repo_root=repo)
         out = io.StringIO()
-        # scope 選択で Enter（project-local = デフォルト）のみ入力
-        in_stream = _tty_stream("\n")
+        in_stream = _tty_stream("")  # 入力不要（scope 選択なし・settings 存在）
         rc = hi.interactive_install(
             cwd=cwd, home=home, repo_root=repo,
             in_stream=in_stream, out_stream=out,
         )
         assert rc == 0
-        assert "設定済" in out.getvalue()
-        assert "uninstall" in out.getvalue()
-        assert "config" in out.getvalue()
+        output = out.getvalue()
+        assert "有効" in output
+        assert "vvread project settings:" in output
+
+    def test_skips_hook_registration_when_user_registered(self, tmp_path):
+        """user scope に登録済みなら scope 選択プロンプトが出ない"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (cwd / "vvread.settings.json").write_text(
+            json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
+            encoding="utf-8",
+        )
+        hi.install(scope="user", cwd=cwd, home=home, repo_root=repo)
+        out = io.StringIO()
+        in_stream = _tty_stream("")
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+        )
+        assert rc == 0
+        assert "既に有効" in out.getvalue()
+        assert "登録先を選択" not in out.getvalue()
+
+    def test_step2_runs_even_if_hook_already_registered(self, tmp_path):
+        """hook 登録済みでも Step 2（settings 状況確認）は必ず実行される"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        hi.install(scope="user", cwd=cwd, home=home, repo_root=repo)
+        vvread_settings = cwd / "vvread.settings.json"
+        assert not vvread_settings.exists()
+
+        out = io.StringIO()
+        in_stream = _tty_stream("\n")  # Step 2 Y/n で Y
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+        )
+        assert rc == 0
+        assert "vvread project settings:" in out.getvalue()
+
+    def test_legacy_scope_excluded_from_choices(self, tmp_path):
+        """legacy hook のある scope は選択肢から除外される"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        legacy_cmd = f"{repo}/scripts/on_stop.sh"
+        _write_legacy_settings(cwd / ".claude" / "settings.local.json", legacy_cmd)
+        (cwd / "vvread.settings.json").write_text(
+            json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        in_stream = _tty_stream("\n\n")  # scope=user (default), settings exists
+        hi.interactive_install(cwd=cwd, home=home, repo_root=repo,
+                               in_stream=in_stream, out_stream=out)
+        output = out.getvalue()
+        # 選択肢に project-local が出ない
+        assert "project-local  →" not in output
+
+    def test_all_scopes_legacy_shows_no_change_message(self, tmp_path):
+        """全 scope が legacy の場合は「今回は変更していません」を表示して Step 2 へ"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        legacy_cmd = f"{repo}/scripts/on_stop.sh"
+        _write_legacy_settings(cwd / ".claude" / "settings.local.json", legacy_cmd)
+        _write_legacy_settings(cwd / ".claude" / "settings.json", legacy_cmd)
+        _write_legacy_settings(home / ".claude" / "settings.json", legacy_cmd)
+        (cwd / "vvread.settings.json").write_text(
+            json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        in_stream = _tty_stream("")  # 入力不要（scope 選択なし・settings 存在）
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+        )
+        assert rc == 0
+        output = out.getvalue()
+        assert "今回は変更していません" in output
+        assert "vvread uninstall" in output
+        assert "登録先を選択" not in output
+
+    def test_project_scope_shows_warning(self, tmp_path):
+        """project scope 選択時に共有設定の注意文が表示される"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (cwd / "vvread.settings.json").write_text(
+            json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        # 選択肢: 1=user, 2=project-local, 3=project → "3" で project を選択
+        in_stream = _tty_stream("3\n")
+        hi.interactive_install(cwd=cwd, home=home, repo_root=repo,
+                               in_stream=in_stream, out_stream=out)
+        assert "git 管理下" in out.getvalue()
+
+    def test_step2_no_creates_settings_with_message(self, tmp_path):
+        """Step 2 で n を選択するとファイル未作成 + 案内メッセージ"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        vvread_settings = cwd / "vvread.settings.json"
+        assert not vvread_settings.exists()
+        out = io.StringIO()
+        # scope=user Enter, settings Y/n で "n"
+        in_stream = _tty_stream("\nn\n")
+        rc = hi.interactive_install(
+            cwd=cwd, home=home, repo_root=repo,
+            in_stream=in_stream, out_stream=out,
+        )
+        assert rc == 0
+        assert not vvread_settings.exists()
+        assert "プロジェクト専用の設定を保存できません" in out.getvalue()
 
     def test_non_tty_without_yes_returns_error(self, tmp_path):
         cwd, home = _make_dirs(tmp_path)
@@ -724,14 +856,12 @@ class TestInteractiveInstall:
         assert result.error is None
         assert result.changed is True
 
-    def test_scope_defaults_to_project_local(self, tmp_path):
-        """TTY あり + Enter で scope 選択 → デフォルト project-local に install"""
+    def test_scope_defaults_to_user(self, tmp_path):
+        """TTY あり + Enter で scope 選択 → デフォルト user に install"""
         cwd, home = _make_dirs(tmp_path)
         repo = tmp_path / "repo"
         repo.mkdir()
         out = io.StringIO()
-        # Engine を unreachable に向けて speaker 選択をスキップ
-        import json
         (cwd / "vvread.settings.json").write_text(
             json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
             encoding="utf-8",
@@ -742,20 +872,18 @@ class TestInteractiveInstall:
             in_stream=in_stream, out_stream=out,
         )
         assert rc == 0
-        assert (cwd / ".claude" / "settings.local.json").exists()
+        assert (home / ".claude" / "settings.json").exists()
 
-    def test_no_speaker_when_engine_unreachable(self, tmp_path):
+    def test_no_speaker_when_engine_unreachable(self, tmp_path, monkeypatch):
         """Engine 未接続時は speaker 選択をスキップして install は成功"""
         cwd, home = _make_dirs(tmp_path)
         repo = tmp_path / "repo"
         repo.mkdir()
+        # engine を常に unreachable に見せる
+        monkeypatch.setattr(hi, "_fetch_speakers_for_install", lambda *a, **kw: None)
         out = io.StringIO()
-        import json
-        (cwd / "vvread.settings.json").write_text(
-            json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
-            encoding="utf-8",
-        )
-        in_stream = _tty_stream("\n\n")
+        # settings 未作成 → Step 2 で Y/n → Y → engine unreachable → スキップ
+        in_stream = _tty_stream("\n\n")  # scope Enter, Y/n Enter
         rc = hi.interactive_install(
             cwd=cwd, home=home, repo_root=repo,
             in_stream=in_stream, out_stream=out,
@@ -763,9 +891,8 @@ class TestInteractiveInstall:
         assert rc == 0
         assert "スキップ" in out.getvalue() or "VOICEVOX" in out.getvalue()
 
-    def test_speaker_written_to_vvread_settings(self, tmp_path):
+    def test_speaker_written_to_vvread_settings(self, tmp_path, monkeypatch):
         """Engine 接続時: speaker 選択が vvread.settings.json に書かれる"""
-        import json
         import threading
         from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -787,14 +914,11 @@ class TestInteractiveInstall:
         cwd, home = _make_dirs(tmp_path)
         repo = tmp_path / "repo"
         repo.mkdir()
-        # vvread.settings.json に engine URL を設定
+        # settings 未作成 + エンジン URL を env で指定
+        monkeypatch.setenv("VOICEVOX_ENGINE_URL", f"http://127.0.0.1:{port}")
         settings_path = cwd / "vvread.settings.json"
-        settings_path.write_text(
-            json.dumps({"voicevox": {"engineUrl": f"http://127.0.0.1:{port}"}}),
-            encoding="utf-8",
-        )
         out = io.StringIO()
-        # scope Enter + speaker Enter
+        # scope Enter, Y/n=Y Enter, speaker Enter (デフォルト=5)
         in_stream = _tty_stream("\n\n\n")
         rc = hi.interactive_install(
             cwd=cwd, home=home, repo_root=repo,
@@ -802,6 +926,7 @@ class TestInteractiveInstall:
         )
         server.shutdown()
         assert rc == 0
+        assert settings_path.exists()
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         assert data["voicevox"]["speaker"] == 5
 
@@ -813,16 +938,16 @@ class TestInteractiveInstall:
 
 class TestEnsureVvreadSettingsFile:
     def test_already_installed_creates_vvread_settings_when_missing(self, tmp_path):
-        """already-installed ケースでも vvread.settings.json が作成される"""
+        """hook 登録済みでも Step 2 で Y を選べば vvread.settings.json が作成される"""
         cwd, home = _make_dirs(tmp_path)
         repo = tmp_path / "repo"
         repo.mkdir()
         hi.install(scope="project-local", cwd=cwd, home=home, repo_root=repo)
         vvread_settings = cwd / "vvread.settings.json"
-        vvread_settings.unlink(missing_ok=True)  # 存在しない状態にする
+        assert not vvread_settings.exists()
 
         out = io.StringIO()
-        in_stream = _tty_stream("\n")
+        in_stream = _tty_stream("\n")  # Step 2 Y/n で Y（デフォルト）
         rc = hi.interactive_install(
             cwd=cwd, home=home, repo_root=repo,
             in_stream=in_stream, out_stream=out,
@@ -839,7 +964,7 @@ class TestEnsureVvreadSettingsFile:
         assert not vvread_settings.exists()
 
         out = io.StringIO()
-        in_stream = _tty_stream("\n\n")
+        in_stream = _tty_stream("\n\n")  # scope Enter, Y/n=Y Enter
         rc = hi.interactive_install(
             cwd=cwd, home=home, repo_root=repo,
             in_stream=in_stream, out_stream=out,
@@ -857,6 +982,23 @@ class TestEnsureVvreadSettingsFile:
         assert not vvread_settings.exists()
 
         argv = ["install", "--yes", "--scope", "project-local"]
+        rc = hi.main(argv)
+        assert rc == 0
+        assert vvread_settings.exists()
+
+    def test_yes_mode_creates_settings_even_if_hook_registered(self, tmp_path, monkeypatch):
+        """--yes 経路: hook 登録済みでも vvread.settings.json が未作成なら作成される"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        # 先に hook を登録しておく
+        hi.install(scope="project-local", cwd=cwd, home=home, repo_root=repo)
+        monkeypatch.chdir(cwd)
+        vvread_settings = cwd / "vvread.settings.json"
+        assert not vvread_settings.exists()
+
+        # hook は既に登録済みだが --yes で install しても settings は作成される
+        argv = ["install", "--yes", "--scope", "user"]
         rc = hi.main(argv)
         assert rc == 0
         assert vvread_settings.exists()
@@ -957,20 +1099,22 @@ class TestInstallLegacy:
         assert result.changed is False
         assert not (cwd / ".claude" / "settings.local.json.bak").exists()
 
-    def test_interactive_install_warns_and_exits_on_legacy_hook(self, tmp_path):
-        """interactive_install() が legacy hook 検出時に案内メッセージを出して終了する"""
+    def test_interactive_install_warns_when_all_scopes_legacy(self, tmp_path):
+        """全 scope が legacy の場合、今回は変更していませんと表示して Step 2 へ進む"""
         cwd, home = _make_dirs(tmp_path)
         repo = tmp_path / "repo"
         repo.mkdir()
-        settings_path = cwd / ".claude" / "settings.local.json"
-        _write_legacy_settings(settings_path, f"{repo}/scripts/on_stop.sh")
+        legacy_cmd = f"{repo}/scripts/on_stop.sh"
+        _write_legacy_settings(cwd / ".claude" / "settings.local.json", legacy_cmd)
+        _write_legacy_settings(cwd / ".claude" / "settings.json", legacy_cmd)
+        _write_legacy_settings(home / ".claude" / "settings.json", legacy_cmd)
         (cwd / "vvread.settings.json").write_text(
             json.dumps({"voicevox": {"engineUrl": "http://127.0.0.1:1"}}),
             encoding="utf-8",
         )
 
         out = io.StringIO()
-        in_stream = _tty_stream("\n")  # scope 選択で Enter のみ
+        in_stream = _tty_stream("")  # 入力不要（scope 選択なし・settings 存在）
         rc = hi.interactive_install(
             cwd=cwd, home=home, repo_root=repo,
             in_stream=in_stream, out_stream=out,
@@ -980,3 +1124,4 @@ class TestInstallLegacy:
         output = out.getvalue()
         assert "今回は変更していません" in output
         assert "vvread uninstall" in output
+        assert "登録先を選択" not in output

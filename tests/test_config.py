@@ -46,6 +46,7 @@ def _make_ctx(
     input_text: str = "",
     tty: bool = True,
     dry_run: bool = False,
+    create: bool = False,
 ) -> tuple:
     """ConfigContext + out / err バッファを返す。"""
     out = io.StringIO()
@@ -53,6 +54,7 @@ def _make_ctx(
     in_stream = _tty_stream(input_text) if tty else _non_tty_stream()
     ctx = cfg.ConfigContext(
         dry_run=dry_run,
+        create=create,
         cwd=tmp_path,
         in_stream=in_stream,
         out_stream=out,
@@ -84,7 +86,7 @@ class TestRequireTty:
         ctx, _, _ = _make_ctx(tmp_path, tty=False)
         msg = cfg._require_tty(ctx)
         assert msg is not None
-        assert "ERROR" in msg
+        assert "エラー" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +231,8 @@ class TestRunConfig:
         ctx, out, err = _make_ctx(tmp_path, tty=False)
         rc = cfg.run_config(ctx)
         assert rc == 1
-        assert "ERROR" in err.getvalue()
+        assert "エラー" in err.getvalue()
+        assert "対話型端末" in err.getvalue()
 
     def test_no_settings_file_exits_1(self, tmp_path):
         with patch.object(cfg._stg, "user_settings_path",
@@ -237,7 +240,48 @@ class TestRunConfig:
             ctx, out, err = _make_ctx(tmp_path, tty=True, input_text="")
             rc = cfg.run_config(ctx)
         assert rc == 1
-        assert "install" in err.getvalue() or "No vvread" in err.getvalue()
+        assert "設定ファイルが見つかりません" in err.getvalue()
+        assert "vvread config --create" in err.getvalue()
+        assert "vvread setup" in err.getvalue()
+
+    def test_create_creates_empty_settings(self, tmp_path):
+        with patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            # 全フィールド Enter（変更なし）で設定ファイルが作成されることを確認
+            input_text = "\n" * len(cfg.CONFIG_FIELDS)
+            ctx, out, err = _make_ctx(tmp_path, tty=True, input_text=input_text, create=True)
+            rc = cfg.run_config(ctx)
+        path = tmp_path / "vvread.settings.json"
+        assert path.exists()
+        assert json.loads(path.read_text(encoding="utf-8")) == {}
+        assert rc == 0
+
+    def test_create_dry_run_no_creation(self, tmp_path):
+        with patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            ctx, out, err = _make_ctx(tmp_path, tty=True, create=True, dry_run=True)
+            rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert not (tmp_path / "vvread.settings.json").exists()
+        assert "DRY-RUN" in out.getvalue()
+
+    def test_create_does_not_overwrite_existing(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 99}})
+        original = path.read_text(encoding="utf-8")
+        # 全フィールド Enter（変更なし）でキャンセル
+        input_text = "\n" * len(cfg.CONFIG_FIELDS)
+        ctx, out, err = _make_ctx(tmp_path, tty=True, input_text=input_text, create=True)
+        cfg.run_config(ctx)
+        assert path.read_text(encoding="utf-8") == original
+
+    def test_non_tty_error_is_japanese(self, tmp_path):
+        ctx, out, err = _make_ctx(tmp_path, tty=False)
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+        stderr_text = err.getvalue()
+        assert "エラー:" in stderr_text
+        assert "対話型端末" in stderr_text
 
     def test_broken_json_exits_1(self, tmp_path):
         path = tmp_path / "vvread.settings.json"

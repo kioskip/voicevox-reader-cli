@@ -146,7 +146,7 @@ vvread play morning.wav
 | `vvread install [--scope SCOPE] [--yes] [--dry-run]` | Claude Code hook を対話式（TTY）または `--yes` で非対話登録 |
 | `vvread uninstall [--scope SCOPE]` | hook を解除 |
 | `vvread speakers` | VOICEVOX Engine から利用可能な speaker/style ID 一覧を表示 |
-| `vvread config` / `vvread edit` | `vvread.settings.json` を対話式に編集（TTY 必須） |
+| `vvread config [--create] [--dry-run]` / `vvread edit` | `vvread.settings.json` を対話式に編集（TTY 必須）。`--create` でファイル未作成時に新規作成してから編集、`--dry-run` で保存せずに内容を確認 |
 | `vvread doctor [--offline]` | ヘルスチェック |
 
 #### `--scope` の値

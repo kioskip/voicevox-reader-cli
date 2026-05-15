@@ -17,10 +17,10 @@
   Chars & Chunk: inlineCodeLimit, chunkChars, chunkHardMax, maxChars
 
 CLI:
-  config.py [--dry-run]
+  config.py [--dry-run] [--create]
 
 Exit code:
-  0 = 保存成功 / 変更なし
+  0 = 保存成功 / 変更なし / --create --dry-run
   1 = 設定ファイル不在 / JSON 破損 / 非 TTY / 書込失敗
   2 = 使い方エラー (argparse default)
 """
@@ -177,6 +177,7 @@ CONFIG_FIELDS: List[Tuple[str, str, type, Any, str]] = [
 class ConfigContext:
     """config 実行時のオプション + 環境を保持する DI コンテナ。"""
     dry_run: bool = False
+    create: bool = False
     cwd: Path = field(default_factory=Path.cwd)
     in_stream: Any = None
     out_stream: Any = None
@@ -201,8 +202,8 @@ def _require_tty(ctx: ConfigContext) -> Optional[str]:
         is_tty = False
     if not is_tty:
         return (
-            "ERROR: vvread config requires an interactive terminal.\n"
-            "This command cannot be run non-interactively."
+            "エラー: vvread config は対話型端末が必要です。\n"
+            "このコマンドは非対話的に実行できません。"
         )
     return None
 
@@ -375,11 +376,23 @@ def run_config(ctx: ConfigContext) -> int:
     # 設定ファイルを探す
     found = _find_settings_file(ctx.cwd)
     if found is None:
-        err.write(
-            "No vvread settings file found.\n"
-            "Run `vvread install` or `vvread setup` first to create settings.\n"
-        )
-        return 1
+        if ctx.create:
+            path = ctx.cwd / "vvread.settings.json"
+            if ctx.dry_run:
+                out.write(f"DRY-RUN: {path} を新規作成します\n")
+                return 0
+            if not path.exists():
+                import json as _json
+                path.write_text(_json.dumps({}, ensure_ascii=False), encoding="utf-8")
+            found = ("project", path)
+        else:
+            err.write(
+                "設定ファイルが見つかりません。\n"
+                "以下のいずれかで作成してください:\n"
+                "  vvread config --create   # 設定ファイルを新規作成して編集を開始\n"
+                "  vvread setup             # 対話式セットアップで設定ファイルを作成\n"
+            )
+            return 1
 
     scope_label, settings_path = found
     out.write(f"設定ファイル: {settings_path}\n")
@@ -453,9 +466,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--dry-run", action="store_true",
         help="変更内容を表示するだけで保存しない",
     )
+    parser.add_argument(
+        "--create", action="store_true",
+        help="設定ファイルが存在しない場合は新規作成してから編集を開始",
+    )
     args = parser.parse_args(argv)
 
-    ctx = ConfigContext(dry_run=args.dry_run)
+    ctx = ConfigContext(dry_run=args.dry_run, create=args.create)
     return run_config(ctx)
 
 

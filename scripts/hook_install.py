@@ -623,6 +623,54 @@ def _write_vvread_settings_speaker(
 
 
 # ---------------------------------------------------------------------------
+# interactive_install helpers
+# ---------------------------------------------------------------------------
+
+
+def _print_hook_status_table(
+    cwd: Path,
+    home: Path,
+    repo_root: Path,
+    out,
+) -> Dict[str, str]:
+    """全 scope の hook 登録状況を表示し {scope: status} を返す。
+    status: "registered" | "legacy" | "none"
+    表示順: user → project → project-local
+    """
+    scope_defs = [
+        ("user",          resolve_settings_path("user",          cwd=cwd, home=home)),
+        ("project",       resolve_settings_path("project",       cwd=cwd, home=home)),
+        ("project-local", resolve_settings_path("project-local", cwd=cwd, home=home)),
+    ]
+    out.write("Claude Code hook 状況:\n")
+    statuses: Dict[str, str] = {}
+    for label, path in scope_defs:
+        data, err = _read_settings(path)
+        if err or data is None:
+            status = "none"
+            display = "-  未登録"
+        else:
+            try:
+                stop_blocks = _ensure_stop_hooks(data)
+                has_vc, legacy = _scan_for_voiceclaude(stop_blocks, repo_root)
+            except RuntimeError:
+                has_vc, legacy = False, []
+            if legacy:
+                status = "legacy"
+                display = "⚠  legacy hook あり (要移行)"
+            elif has_vc:
+                status = "registered"
+                display = "✓  vvread hook 登録済"
+            else:
+                status = "none"
+                display = "-  未登録"
+        statuses[label] = status
+        out.write(f"  {label:<16}{display}\n")
+    out.write("\n")
+    return statuses
+
+
+# ---------------------------------------------------------------------------
 # interactive_install
 # ---------------------------------------------------------------------------
 
@@ -638,7 +686,7 @@ def interactive_install(
     out_stream: Any = None,
     err_stream: Any = None,
 ) -> int:
-    """TTY 確認 → scope 選択 → hook 確認 → speaker 選択 → install 実行。
+    """全 scope hook 状況表示 → 登録 → settings 確認の2段階対話 install。
 
     戻り値は exit code (0/1)。
     """
@@ -657,75 +705,144 @@ def interactive_install(
         )
         return 1
 
-    # 2. scope 選択
-    scope_choices = list(SCOPES)
-    scope_labels = [
-        f"project-local  →  {cwd}/.claude/settings.local.json",
-        f"project        →  {cwd}/.claude/settings.json",
-        f"user           →  {home}/.claude/settings.json",
-    ]
-    default_scope_label = scope_labels[0]
-    chosen_label = _prompt_choice(
-        "登録先を選択してください:",
-        scope_labels,
-        default_scope_label,
-        in_stream=in_stream,
-        out_stream=out,
-    )
-    chosen_scope = scope_choices[scope_labels.index(chosen_label)]
-
-    # 2-b. 選択した scope に既に hook が登録済みか確認 → 登録済みなら即終了
+    # repo_root 解決（Step 1-b / 1-c で共用）
     if repo_root is None:
         rr_env = os.environ.get("VVREAD_PROJECT_DIR")
-        if rr_env:
-            repo_root = Path(rr_env)
-        else:
-            repo_root = Path(__file__).resolve().parent.parent
+        repo_root = Path(rr_env) if rr_env else Path(__file__).resolve().parent.parent
 
-    _check_path = resolve_settings_path(chosen_scope, cwd=cwd, home=home)
-    _check_data, _check_err = _read_settings(_check_path)
-    if not _check_err and _check_data is not None:
-        try:
-            _stop_blocks = _ensure_stop_hooks(_check_data)
-            _has_vc, _legacy = _scan_for_voiceclaude(_stop_blocks, repo_root)
-        except RuntimeError:
-            _has_vc = False
-            _legacy = []
-        if _legacy:
+    # Step 1-a. 全 scope の hook 状況テーブルを表示
+    statuses = _print_hook_status_table(cwd, home, repo_root, out)
+
+    # Step 1-b. hook 登録判定
+    # いずれかに modern hook があれば有効とみなし追加登録しない
+    registered_scope: Optional[str] = None
+    for _s in ("user", "project", "project-local"):
+        if statuses.get(_s) == "registered":
+            registered_scope = _s
+            break
+
+    if registered_scope is not None:
+        if registered_scope == "user":
+            out.write("Claude hook は既に有効です。\n\n")
+        elif registered_scope == "project":
             out.write(
-                "legacy vvread hook (on_stop.sh) が登録されています。\n"
+                "Claude hook は有効です。\n"
+                "注意: project スコープは共有設定の可能性があります。"
+                "意図的に登録した場合は問題ありません。\n\n"
+            )
+        else:  # project-local
+            out.write("このプロジェクトでは Claude hook は有効です。\n\n")
+
+        # 複数スコープに登録されている場合は注意を表示
+        registered_scopes = [
+            s for s in ("user", "project", "project-local")
+            if statuses.get(s) == "registered"
+        ]
+        if len(registered_scopes) >= 2:
+            out.write(
+                "  ※ 注意: 複数のスコープ（"
+                + "・".join(registered_scopes)
+                + "）に hook が登録されています。\n"
+                "          もし二重で再生される場合には、いずれか一方を削除してください\n"
+                "    コマンド：\n"
+                "          vvread uninstall --scope user\n"
+                "          vvread uninstall --scope project\n\n"
+            )
+    else:
+        # legacy のない scope のみ選択肢にする（推奨順: user → project-local → project）
+        available = [
+            s for s in ("user", "project-local", "project")
+            if statuses.get(s) != "legacy"
+        ]
+
+        if not available:
+            # 全 scope が legacy
+            out.write(
                 "今回は変更していません。\n"
-                "新しい hook に移行するには、先に以下を実行してください：\n"
-                f"  vvread uninstall --scope {chosen_scope}\n"
-                "その後、改めて vvread install を実行してください。\n\n"
+                "全スコープに legacy hook があります。先に `vvread uninstall` を実行してください。\n\n"
             )
-            return 0
-        if _has_vc:
-            out.write(
-                "vvreadはすでに設定済です。\n"
-                "`vvread uninstall`: この場所から設定を消します\n"
-                "`vvread config`: 設定を変更します\n"
+        else:
+            # Step 1-c. scope 選択（デフォルト: user を先頭）
+            _label_map = {
+                "user":          f"user           →  {home}/.claude/settings.json",
+                "project-local": f"project-local  →  {cwd}/.claude/settings.local.json",
+                "project":       f"project        →  {cwd}/.claude/settings.json",
+            }
+            scope_labels = [_label_map[s] for s in available]
+            chosen_label = _prompt_choice(
+                "登録先を選択してください:",
+                scope_labels,
+                scope_labels[0],
+                in_stream=in_stream,
+                out_stream=out,
             )
-            _ensure_vvread_settings_file(cwd, dry_run=dry_run, out=out)
-            return 0
+            chosen_scope = available[scope_labels.index(chosen_label)]
 
-    # 3. .claude/ 存在確認
-    claude_dir = cwd / ".claude"
-    if not claude_dir.exists():
-        if not _prompt_yn(
-            f".claude/ が存在しません。{claude_dir} を作成しますか？",
-            default=True,
-            in_stream=in_stream,
-            out_stream=out,
-        ):
-            out.write("インストールをキャンセルしました。\n")
-            return 0
+            if chosen_scope == "project":
+                out.write(
+                    "注意: project スコープは git 管理下のファイルです。\n"
+                    "チームで共有する場合は意図的に選択してください。\n\n"
+                )
 
-    # 4. hook command を表示
-    hook_command = build_hook_command(repo_root)
-    out.write(f"\nHook command:\n  {hook_command}\n\n")
+            # .claude/ 存在確認（project / project-local のみ）
+            if chosen_scope in ("project", "project-local"):
+                claude_dir = cwd / ".claude"
+                if not claude_dir.exists():
+                    if not _prompt_yn(
+                        f".claude/ が存在しません。{claude_dir} を作成しますか？",
+                        default=True,
+                        in_stream=in_stream,
+                        out_stream=out,
+                    ):
+                        out.write("インストールをキャンセルしました。\n")
+                        return 0
 
-    # 5. VOICEVOX speaker 選択
+            hook_command = build_hook_command(repo_root)
+            out.write(f"\nHook command:\n  {hook_command}\n\n")
+
+            result = install(
+                scope=chosen_scope,
+                cwd=cwd,
+                home=home,
+                repo_root=repo_root,
+                hook_command=hook_command,
+                dry_run=dry_run,
+                yes=True,
+            )
+            _emit_install(result)
+            if result.error:
+                return 1
+
+    # Step 2. vvread.settings.json 確認・作成
+    vvread_settings_path = cwd / "vvread.settings.json"
+    out.write("vvread project settings:\n")
+    if vvread_settings_path.exists():
+        out.write(
+            "  ./vvread.settings.json  ✓ 作成済\n"
+            "  `vvread config` でプロジェクト設定を変更できます。\n\n"
+        )
+        return 0
+
+    out.write("  ./vvread.settings.json  - 未作成\n\n")
+
+    if dry_run:
+        out.write("DRY-RUN: would create ./vvread.settings.json\n")
+        return 0
+
+    out.write(
+        "作成すると、このプロジェクト専用にスピーカーの選択、音量の調整などが設定できます。\n"
+        "作成しない場合でも vvread は動作しますが、プロジェクト専用の設定を保存できません。\n"
+    )
+    if not _prompt_yn(
+        "このプロジェクト用の vvread.settings.json を作成しますか？",
+        default=True,
+        in_stream=in_stream,
+        out_stream=out,
+    ):
+        out.write("プロジェクト専用の設定を保存できません。\n")
+        return 0
+
+    # Speaker 選択
     import settings as _stg  # noqa: PLC0415 (遅延 import: 循環防止)
     loaded = _stg.load(cwd=cwd)
     rv = loaded.get("voicevox.engineUrl")
@@ -775,23 +892,7 @@ def interactive_install(
         else:
             out.write("有効な Speaker 情報が取得できませんでした。スキップします。\n\n")
 
-    # 6. install 実行
-    result = install(
-        scope=chosen_scope,
-        cwd=cwd,
-        home=home,
-        repo_root=repo_root,
-        hook_command=hook_command,
-        dry_run=dry_run,
-        yes=True,
-    )
-    _emit_install(result)
-    if result.error:
-        return 1
-
     _ensure_vvread_settings_file(cwd, dry_run=dry_run, out=out)
-
-    # speaker を vvread.settings.json に書き込む
     if selected_speaker is not None and not dry_run:
         _write_vvread_settings_speaker(cwd, selected_speaker)
         out.write(f"Speaker ID {selected_speaker} を vvread.settings.json に保存しました。\n")
@@ -813,8 +914,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
         yes=args.yes,
     )
     _emit_install(result)
-    if not result.error:
-        _ensure_vvread_settings_file(Path.cwd(), dry_run=args.dry_run, out=sys.stdout)
+    _ensure_vvread_settings_file(Path.cwd(), dry_run=args.dry_run, out=sys.stdout)
     return 1 if result.error else 0
 
 
