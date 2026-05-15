@@ -20,6 +20,20 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.1.6] - 2026-05-15
+
+### Added
+
+- `vvread config --create`: 設定ファイルが存在しない場合に空の `{}` で新規作成してから編集を開始するオプションを追加。`vvread install` で設定ファイルが作られなかった場合の後処理に利用できる。
+
+### Changed
+
+- `vvread install` を2段階フローに再設計。Step 1 で現在の hook 登録状態（user / project / project-local スコープ）を表示してから Step 2 でスコープ・speaker 選択を行う。既に登録済みのスコープを再確認した上で意図したスコープを選びやすくなった。
+- `vvread install` で複数スコープに hook が登録されている場合（例: user + project-local）、完了後に重複登録の注意文言と片方を削除するコマンド例（`vvread uninstall --scope <scope>`）を表示するようになった。
+- `vvread config` のエラーメッセージを日本語化。TTY が利用できない場合と設定ファイルが存在しない場合のエラーに対処方法を含む案内文を表示するよう改善。
+
+---
+
 ## [0.1.5] - 2026-05-15
 
 ### Fixed
