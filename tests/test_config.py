@@ -47,6 +47,9 @@ def _make_ctx(
     tty: bool = True,
     dry_run: bool = False,
     create: bool = False,
+    user_setting: bool = False,
+    set_pairs: list = None,
+    json_patch: str = None,
 ) -> tuple:
     """ConfigContext + out / err バッファを返す。"""
     out = io.StringIO()
@@ -55,6 +58,9 @@ def _make_ctx(
     ctx = cfg.ConfigContext(
         dry_run=dry_run,
         create=create,
+        user_setting=user_setting,
+        set_pairs=set_pairs or [],
+        json_patch=json_patch,
         cwd=tmp_path,
         in_stream=in_stream,
         out_stream=out,
@@ -360,3 +366,508 @@ class TestRunConfig:
         # 終了コード 0（--help は正常終了）
         assert result.returncode == 0
         assert "dry-run" in result.stdout.lower() or "usage" in result.stdout.lower()
+
+
+# ---------------------------------------------------------------------------
+# _find_settings_file (user_setting)
+# ---------------------------------------------------------------------------
+
+
+class TestUserSetting:
+    def test_user_setting_returns_user_path(self, tmp_path):
+        user_path = tmp_path / "user_settings.json"
+        _write_settings(user_path, {})
+        with patch.object(cfg._stg, "user_settings_path", return_value=user_path):
+            result = cfg._find_settings_file(tmp_path, user_setting=True)
+        assert result is not None
+        label, path = result
+        assert label == "user"
+        assert path == user_path
+
+    def test_user_setting_ignores_project(self, tmp_path):
+        project = tmp_path / "vvread.settings.json"
+        user_path = tmp_path / "user_settings.json"
+        _write_settings(project, {})
+        _write_settings(user_path, {})
+        with patch.object(cfg._stg, "user_settings_path", return_value=user_path):
+            result = cfg._find_settings_file(tmp_path, user_setting=True)
+        assert result is not None
+        label, _ = result
+        assert label == "user"
+
+    def test_user_setting_returns_none_when_missing(self, tmp_path):
+        with patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            result = cfg._find_settings_file(tmp_path, user_setting=True)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# --user-setting interactive + --create
+# ---------------------------------------------------------------------------
+
+
+class TestUserSettingCreate:
+    def test_user_setting_create_targets_user_file(self, tmp_path):
+        user_path = tmp_path / "user" / "settings.json"
+        with patch.object(cfg._stg, "user_settings_path", return_value=user_path):
+            with patch.object(cfg._stg, "project_settings_path",
+                              return_value=tmp_path / "vvread.settings.json"):
+                input_text = "\n" * len(cfg.CONFIG_FIELDS)
+                ctx, out, err = _make_ctx(tmp_path, tty=True, input_text=input_text,
+                                          create=True, user_setting=True)
+                rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert user_path.exists()
+        assert json.loads(user_path.read_text(encoding="utf-8")) == {}
+
+
+# ---------------------------------------------------------------------------
+# B-107 + B-109 統合: --user-setting + --set
+# ---------------------------------------------------------------------------
+
+
+class TestUserSettingWithSet:
+    def test_writes_to_user_file(self, tmp_path):
+        user_path = tmp_path / "user_settings.json"
+        _write_settings(user_path, {})
+        with patch.object(cfg._stg, "user_settings_path", return_value=user_path):
+            ctx, out, err = _make_ctx(tmp_path, tty=False,
+                                      user_setting=True, set_pairs=["voicevox.speaker=8"])
+            rc = cfg.run_config(ctx)
+        assert rc == 0
+        data = _read_settings(user_path)
+        assert data["voicevox"]["speaker"] == 8
+        assert "Updated:" in out.getvalue()
+
+    def test_does_not_touch_project_file(self, tmp_path):
+        project = tmp_path / "vvread.settings.json"
+        user_path = tmp_path / "user_settings.json"
+        _write_settings(project, {"voicevox": {"speaker": 3}})
+        _write_settings(user_path, {})
+        with patch.object(cfg._stg, "user_settings_path", return_value=user_path):
+            ctx, out, err = _make_ctx(tmp_path, tty=False,
+                                      user_setting=True, set_pairs=["voicevox.speaker=8"])
+            cfg.run_config(ctx)
+        assert _read_settings(project)["voicevox"]["speaker"] == 3
+
+
+# ---------------------------------------------------------------------------
+# 親ディレクトリ自動作成
+# ---------------------------------------------------------------------------
+
+
+class TestUserSettingParentDir:
+    def test_creates_parent_dir(self, tmp_path):
+        user_path = tmp_path / "deep" / "nested" / "settings.json"
+        with patch.object(cfg._stg, "user_settings_path", return_value=user_path):
+            ctx, out, err = _make_ctx(tmp_path, tty=False,
+                                      user_setting=True, set_pairs=["voicevox.speaker=3"])
+            rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert user_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# --set フラグ
+# ---------------------------------------------------------------------------
+
+
+class TestSetFlag:
+    def test_writes_float(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.speed=2.0"])
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert _read_settings(path)["voicevox"]["speed"] == 2.0
+
+    def test_writes_int(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.speaker=8"])
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert _read_settings(path)["voicevox"]["speaker"] == 8
+
+    def test_writes_str(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.engineUrl=http://x:50021"])
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert _read_settings(path)["voicevox"]["engineUrl"] == "http://x:50021"
+
+    def test_no_tty_required(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, tty=False, set_pairs=["voicevox.speaker=3"])
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+
+
+class TestSetFlagMultiple:
+    def test_multiple_keys(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path,
+                                  set_pairs=["voicevox.speed=2.0", "voicevox.speaker=8"])
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        data = _read_settings(path)
+        assert data["voicevox"]["speed"] == 2.0
+        assert data["voicevox"]["speaker"] == 8
+
+    def test_same_key_last_wins(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path,
+                                  set_pairs=["voicevox.speaker=3", "voicevox.speaker=99"])
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert _read_settings(path)["voicevox"]["speaker"] == 99
+
+
+class TestSetFlagUnknownKey:
+    def test_unknown_key_saved_as_string(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["custom.key=hello"])
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        data = _read_settings(path)
+        assert data["custom"]["key"] == "hello"
+
+
+class TestSetFlagErrors:
+    def test_no_equals_sign(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.speed"])
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+        assert "ERROR" in err.getvalue()
+
+    def test_type_coerce_failure(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.speed=abc"])
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+        assert "ERROR" in err.getvalue()
+
+    def test_empty_value(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.speed="])
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+        assert "ERROR" in err.getvalue()
+
+    def test_empty_key(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["=abc"])
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+
+    def test_leading_dot(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=[".voicevox.speed=2.0"])
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+
+    def test_trailing_dot(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.=2.0"])
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+
+    def test_consecutive_dots(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox..speed=2.0"])
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# --json フラグ
+# ---------------------------------------------------------------------------
+
+
+class TestJsonFlag:
+    def test_writes_nested_object(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path,
+                                  json_patch='{"voicevox": {"speed": 2.0, "speaker": 8}}')
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        data = _read_settings(path)
+        assert data["voicevox"]["speed"] == 2.0
+        assert data["voicevox"]["speaker"] == 8
+
+    def test_int_accepted_for_float_field(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, json_patch='{"voicevox": {"speed": 2}}')
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert _read_settings(path)["voicevox"]["speed"] == 2.0
+
+
+class TestJsonFlagDeepMerge:
+    def test_sibling_keys_preserved(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speed": 1.5, "speaker": 3}})
+        ctx, out, err = _make_ctx(tmp_path, json_patch='{"voicevox": {"speed": 2.0}}')
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        data = _read_settings(path)
+        assert data["voicevox"]["speed"] == 2.0
+        assert data["voicevox"]["speaker"] == 3  # 消えない
+
+    def test_unknown_object_preserved(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"custom": {"key": "value"}})
+        ctx, out, err = _make_ctx(tmp_path, json_patch='{"voicevox": {"speed": 2.0}}')
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        data = _read_settings(path)
+        assert data["voicevox"]["speed"] == 2.0
+        assert data["custom"]["key"] == "value"  # unknown object 保持
+
+    def test_unknown_section_in_patch_preserved(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path,
+                                  json_patch='{"voicevox": {"speed": 2.0}, "myapp": {"x": 1}}')
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        data = _read_settings(path)
+        assert data["myapp"]["x"] == 1
+
+
+class TestJsonFlagErrors:
+    def test_invalid_json(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, json_patch="{broken")
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+        assert "ERROR" in err.getvalue()
+
+    def test_type_mismatch(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, json_patch='{"voicevox": {"speed": "fast"}}')
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+
+    def test_toplevel_array(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, json_patch='[1, 2, 3]')
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+
+    def test_toplevel_scalar(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, json_patch='42')
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+
+    def test_null_value(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path,
+                                  json_patch='{"voicevox": {"speed": null}}')
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+
+    def test_known_section_non_object(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, json_patch='{"voicevox": 1}')
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+        assert "ERROR" in err.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# --json + --set 併用: マージ順序
+# ---------------------------------------------------------------------------
+
+
+class TestMergeOrder:
+    def test_set_overwrites_json(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(
+            tmp_path,
+            json_patch='{"voicevox": {"speaker": 3}}',
+            set_pairs=["voicevox.speaker=99"],
+        )
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert _read_settings(path)["voicevox"]["speaker"] == 99
+
+
+# ---------------------------------------------------------------------------
+# 非 TTY での --set 成功
+# ---------------------------------------------------------------------------
+
+
+class TestNonTtyWrite:
+    def test_non_tty_with_set_succeeds(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, tty=False, set_pairs=["voicevox.speaker=3"])
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+
+    def test_non_tty_without_set_fails(self, tmp_path):
+        ctx, out, err = _make_ctx(tmp_path, tty=False)
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+        assert "エラー" in err.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# 自動新規作成（--create 不要）
+# ---------------------------------------------------------------------------
+
+
+class TestAutoCreate:
+    def test_set_creates_file_when_missing(self, tmp_path):
+        with patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.speaker=8"])
+            rc = cfg.run_config(ctx)
+        path = tmp_path / "vvread.settings.json"
+        assert rc == 0
+        assert path.exists()
+        assert _read_settings(path)["voicevox"]["speaker"] == 8
+
+    def test_json_creates_file_when_missing(self, tmp_path):
+        with patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            ctx, out, err = _make_ctx(tmp_path,
+                                      json_patch='{"voicevox": {"speed": 2.0}}')
+            rc = cfg.run_config(ctx)
+        path = tmp_path / "vvread.settings.json"
+        assert rc == 0
+        assert path.exists()
+        assert _read_settings(path)["voicevox"]["speed"] == 2.0
+
+
+class TestCreateWithSet:
+    def test_create_flag_ignored_in_non_interactive(self, tmp_path):
+        with patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            ctx, out, err = _make_ctx(tmp_path, create=True,
+                                      set_pairs=["voicevox.speaker=8"])
+            rc = cfg.run_config(ctx)
+        path = tmp_path / "vvread.settings.json"
+        assert rc == 0
+        assert path.exists()
+        assert _read_settings(path)["voicevox"]["speaker"] == 8
+
+
+# ---------------------------------------------------------------------------
+# dry-run（非対話モード）
+# ---------------------------------------------------------------------------
+
+
+class TestDryRunNonInteractive:
+    def test_file_not_modified(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 3}})
+        original = path.read_text(encoding="utf-8")
+        ctx, out, err = _make_ctx(tmp_path, dry_run=True,
+                                  set_pairs=["voicevox.speaker=99"])
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert path.read_text(encoding="utf-8") == original
+
+    def test_diff_shown_in_stdout(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 3}})
+        ctx, out, err = _make_ctx(tmp_path, dry_run=True,
+                                  set_pairs=["voicevox.speaker=99"])
+        cfg.run_config(ctx)
+        output = out.getvalue()
+        assert "voicevox.speaker" in output
+        assert "3" in output
+        assert "99" in output
+
+    def test_unset_key_shows_unset(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, dry_run=True,
+                                  set_pairs=["voicevox.speed=2.0"])
+        cfg.run_config(ctx)
+        assert "<unset>" in out.getvalue()
+
+
+class TestDryRunAutoCreate:
+    def test_would_create_shown(self, tmp_path):
+        with patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            ctx, out, err = _make_ctx(tmp_path, dry_run=True,
+                                      set_pairs=["voicevox.speaker=8"])
+            rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert "Would create:" in out.getvalue()
+        assert not (tmp_path / "vvread.settings.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# unknown keys 保持
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownKeysPreserved:
+    def test_set_preserves_unknown_keys(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 3}, "unknown": {"k": "v"}})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.speaker=8"])
+        cfg.run_config(ctx)
+        data = _read_settings(path)
+        assert data["unknown"]["k"] == "v"
+
+    def test_json_preserves_unknown_keys(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 3}, "unknown": {"k": "v"}})
+        ctx, out, err = _make_ctx(tmp_path, json_patch='{"voicevox": {"speaker": 8}}')
+        cfg.run_config(ctx)
+        data = _read_settings(path)
+        assert data["unknown"]["k"] == "v"
+
+
+# ---------------------------------------------------------------------------
+# Updated メッセージ
+# ---------------------------------------------------------------------------
+
+
+class TestUpdatedMessage:
+    def test_updated_path_shown(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.speaker=3"])
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert "Updated:" in out.getvalue()
+
+    def test_no_extra_output_on_success(self, tmp_path):
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.speaker=3"])
+        cfg.run_config(ctx)
+        lines = [l for l in out.getvalue().strip().splitlines() if l]
+        assert len(lines) == 1
+        assert lines[0].startswith("Updated:")

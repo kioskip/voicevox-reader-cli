@@ -24,3 +24,6 @@ __pycache__/
 
 # vvread のユーザー設定(個人ごとに変わる、example.json をコピーして使う)
 vvread.settings.json
+
+# README の HTML プレビュー(生成ファイル)
+*.html
