@@ -26,12 +26,15 @@
 
 ### 主な特徴
 
-- **読み上げ**: VOICEVOXで合成したwavファイルをそのまま読み上げ。
-- **分割読み込み**: 長文を分割し、再生中に次を合成して準備。
-- **セッション割り込み**: 新しい応答が来たら旧応答の再生は次境界で停止。
-- **wavキャッシュ**: 短い定型文（"完了しました" 等）はキャッシュして、合成スキップ
-- **誤読対策**: 数字+助数詞・漢数字日付・ASCII 単位・パス省略・ハッシュ省略・同形異音漢字の整形パイプライン
-- **英単語のカナ化**: e2k（任意）+ 内蔵辞書で `Docker` → `ドッカー` のような変換
+- 🗣️ **コマンドで読み上げ**: `vvread "読み上げます"` で読み上げ
+- 🗒️ **ファイルの読み込み**: `vvread file FILENAME` でファイルを読み上げ
+- 💻 **パイプ連携**: `echo "テキスト" | vvread` パイプを繋いで受け取ったテキストの読み上げ
+- 📢 **Claude Code 連携**: Stop hook で Claude Code の最終応答を自動読み上げ
+- ⚡ **prefetch**: 長文を分割し、再生中に次の文節を先行して合成
+- 🔁 **セッション割り込み**: 新しい応答が来たら旧応答の再生は次境界で停止
+- 💾 **wav キャッシュ**: 短い定型文はキャッシュ利用で合成スキップ
+- 🧹 **誤読対策**: 数字+助数詞・漢数字日付・ASCII 単位・パス省略・ハッシュ省略・同形異音漢字の整形パイプライン
+- 🔤 **英単語のカナ化**: e2k（任意）+ 内蔵辞書で `Docker` → `ドッカー` のような変換
 
 ---
 
@@ -44,21 +47,16 @@
 
 ### 依存
 
-| 依存 | 用途 | 備考 |
-|---|---|---|
-| `bash` 3.2+ | スクリプト実行 | macOS の `/bin/bash` (3.2) で動くよう実装 |
-| `python3` 3.10+ | sanitize / cache_key / parse_transcript | CI matrix = 3.10 + 3.12 |
-| `curl` | VOICEVOX API 呼び出し | |
-| **VOICEVOX Engine** | 音声合成本体 | 別途インストール（後述「VOICEVOX Engine の準備」参照） |
-
-### 任意依存
-
-| 依存 | 影響 |
-|---|---|
-| `jq` | settings.json マージ / 発話パラメータ tuning が高速化（無ければ Python `json` フォールバック） |
-| `docker` + `docker compose` | VOICEVOX Engine をコンテナで起動するのに便利 |
-| `e2k`(Python pkg) | 英単語のカナ化精度向上（無ければ辞書 + 逐字 fallback） |
-| `terminal-notifier`(macOS) | 失敗時のデスクトップ通知（macOS のみ） |
+| 必須/任意 | 依存 | 用途 | 備考 |
+|---|---|---|---|
+| 必須 | `bash` 3.2+ | スクリプト実行 | macOS の `/bin/bash` 3.2 で動くよう実装 |
+| 必須 | `python3` 3.10+ | sanitize / cache_key / parse_transcript | CI matrix = 3.10 + 3.12 |
+| 必須 | `curl` | VOICEVOX API 呼び出し | |
+| 必須 | **VOICEVOX Engine** | 音声合成本体 | 別途インストール（後述「VOICEVOX Engine の準備」参照） |
+| 任意 | `jq` | settings.json マージ / 発話パラメータ tuning | 無ければ Python `json` に fallback |
+| 任意 | `docker` + `docker compose` | VOICEVOX Engine のコンテナ起動 | `vvread setup --engine docker` 利用時に便利 |
+| 任意 | `e2k` Python package | 英単語のカナ化精度向上 | 無ければ辞書 + 逐字 fallback |
+| 任意 | `terminal-notifier` | 失敗時のデスクトップ通知 | macOS のみ |
 
 `vvread doctor` で全依存とその検出結果、OS 別インストールヒントが確認できます。
 
@@ -132,12 +130,6 @@ vvread synth "おはようございます" --output morning.wav --speaker 1
 vvread play morning.wav
 ```
 
-#### 注意事項
-
-- **subcommand 名はテキストとして扱われません。** `vvread doctor` は doctor コマンドを実行します。"doctor" という文字列を読み上げたい場合は `vvread say "doctor"` と明示してください。
-- **オプションはテキストの後ろに指定してください。** `vvread "こんにちは" --speaker 8` は動作しますが、`vvread --speaker 8 "こんにちは"` は非対応です。
-- **対応するのは明示的なパイプ入力のみです。** `cat file | vvread` は動作しますが、リダイレクト（`vvread < file`）は非対応です。ファイルを渡す場合は `vvread file <path>` を使用してください。
-
 ### 5-2. 制御系
 
 | コマンド | 説明 |
@@ -157,7 +149,7 @@ vvread play morning.wav
 | `vvread install [--scope SCOPE] [--yes] [--dry-run]` | Claude Code hook を対話式（TTY）または `--yes` で非対話登録 |
 | `vvread uninstall [--scope SCOPE]` | hook を解除 |
 | `vvread speakers` | VOICEVOX Engine から利用可能な speaker/style ID 一覧を表示 |
-| `vvread config [--create] [--dry-run]` / `vvread edit` | `vvread.settings.json` を対話式に編集（TTY 必須）。`--create` でファイル未作成時に新規作成してから編集、`--dry-run` で保存せずに内容を確認 |
+| `vvread config [--set KEY=VALUE] [--json '{...}'] [--user-setting] [--create] [--dry-run]` / `vvread edit` | `vvread.settings.json` を編集。デフォルトは対話式（TTY 必須）。`--set`/`--json` で TTY 不要の非対話モードに切り替わる。`--user-setting` でユーザースコープのファイルを対象にする |
 | `vvread doctor [--offline]` | ヘルスチェック |
 
 #### `--scope` の値
@@ -173,7 +165,9 @@ vvread install                        # 対話式（scope・speaker を選択）
 vvread install --yes                  # 非対話、project-local（デフォルト）
 vvread install --scope user --yes     # 非対話、全プロジェクト対象
 vvread speakers                       # speaker ID 一覧を確認
-vvread config                         # 設定を対話編集
+vvread config                               # 設定を対話編集（TTY）
+vvread config --set voicevox.speakerId=3    # 非対話: 単一キーを設定
+vvread config --json '{"voicevox.speakerId":3}' --user-setting  # ユーザースコープに設定
 ```
 
 ### 5-4. `vvread doctor` 出力例
@@ -361,3 +355,11 @@ vvread clean   # 残留ファイル削除
 ## 10. CHANGELOG
 
 [`CHANGELOG.md`](CHANGELOG.md) 参照。Keep a Changelog 形式 + semver。
+
+
+
+#### 注意事項
+
+- **subcommand 名はテキストとして扱われません。** `vvread doctor` は doctor コマンドを実行します。"doctor" という文字列を読み上げたい場合は `vvread say "doctor"` と明示してください。
+- **オプションはテキストの後ろに指定してください。** `vvread "こんにちは" --speaker 8` は動作しますが、`vvread --speaker 8 "こんにちは"` は非対応です。
+- **対応するのは明示的なパイプ入力のみです。** `cat file | vvread` は動作しますが、リダイレクト（`vvread < file`）は非対応です。ファイルを渡す場合は `vvread file <path>` を使用してください。

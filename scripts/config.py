@@ -1,32 +1,28 @@
 #!/usr/bin/env python3
-"""scripts/config.py - vvread config / edit: 設定ファイル対話編集 (B-014)
+"""scripts/config.py - vvread config / edit: 設定ファイル編集 (B-014, B-107, B-109)
 
-`vvread config` / `vvread edit` で vvread.settings.json を対話式に編集する。
+`vvread config` / `vvread edit` で vvread.settings.json を編集する。
 
-- TTY 必須。非 TTY → ERROR exit 1
-- $EDITOR は開かない。対話で値を聞いてその場で JSON に反映する
-- 保存前に .bak を作成（1世代のみ）、atomic write
-- project settings が存在すれば project を編集、なければ user settings を編集
-- どちらも存在しなければ `vvread install` を案内して exit 1
-- --yes は持たない（config は TTY 専用の対話コマンド）
-- --dry-run のみ（書き込みをスキップして変更内容を表示するだけ）
-- unknown keys は消さない（既存の設定を保持する）
+対話モード (TTY 必須):
+  設定ファイルの各フィールドを順番に入力して保存する。
 
-編集対象フィールド (v0.1.2):
-  基本設定: engineUrl, speaker, volume, speed, pauseScale, pitch, intonation
-  Chars & Chunk: inlineCodeLimit, chunkChars, chunkHardMax, maxChars
+非対話モード (--set / --json):
+  TTY 不要。スクリプト・CI・Claude Code Stop hook から直接値を書き込める。
+  設定ファイルが存在しない場合は {} から自動作成する（--create 不要）。
 
 CLI:
-  config.py [--dry-run] [--create]
+  config.py [--dry-run] [--create] [--user-setting]
+            [--set KEY=VALUE ...] [--json JSON]
 
 Exit code:
-  0 = 保存成功 / 変更なし / --create --dry-run
-  1 = 設定ファイル不在 / JSON 破損 / 非 TTY / 書込失敗
+  0 = 成功 / 変更なし / dry-run 完了
+  1 = 入力エラー / 型エラー / JSON エラー / 書込失敗 / 非 TTY（対話モード）
   2 = 使い方エラー (argparse default)
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -168,6 +164,9 @@ CONFIG_FIELDS: List[Tuple[str, str, type, Any, str]] = [
     ),
 ]
 
+# 既知のトップレベルセクション（SCHEMA から導出）
+_KNOWN_SECTIONS: frozenset = frozenset(k.split(".")[0] for k in _stg.SCHEMA)
+
 # ---------------------------------------------------------------------------
 # DI コンテナ
 # ---------------------------------------------------------------------------
@@ -178,6 +177,9 @@ class ConfigContext:
     """config 実行時のオプション + 環境を保持する DI コンテナ。"""
     dry_run: bool = False
     create: bool = False
+    user_setting: bool = False
+    set_pairs: List[str] = field(default_factory=list)
+    json_patch: Optional[str] = None
     cwd: Path = field(default_factory=Path.cwd)
     in_stream: Any = None
     out_stream: Any = None
@@ -215,14 +217,18 @@ def _require_tty(ctx: ConfigContext) -> Optional[str]:
 
 def _find_settings_file(
     cwd: Path,
+    *,
+    user_setting: bool = False,
 ) -> Optional[Tuple[str, Path]]:
     """編集する vvread.settings.json を探す。
 
-    優先順位:
-      1. <cwd>/vvread.settings.json  → ("project", path)
-      2. user settings               → ("user", path)
+    user_setting=True の場合はユーザー設定ファイルのみを対象とする。
+    それ以外は project → user の優先順位で探す。
     どちらも存在しなければ None。
     """
+    if user_setting:
+        user = _stg.user_settings_path()
+        return ("user", user) if user.exists() else None
     project = _stg.project_settings_path(cwd)
     if project.exists():
         return "project", project
@@ -355,17 +361,186 @@ def _prompt_yes_no(ctx: ConfigContext, question: str, default: bool = True) -> b
 
 
 # ---------------------------------------------------------------------------
+# 非対話モード: バリデーション / パッチ適用ヘルパー
+# ---------------------------------------------------------------------------
+
+
+def _validate_key(key: str) -> None:
+    """--set のキーを検証する。不正な場合は ValueError を raise。"""
+    if not key:
+        raise ValueError("キーが空です")
+    if key.startswith(".") or key.endswith("."):
+        raise ValueError(f"キーの先頭・末尾にドットは使えません: {key!r}")
+    if ".." in key:
+        raise ValueError(f"キーに連続したドットは使えません: {key!r}")
+
+
+def _coerce_str_value(key: str, raw: str) -> Any:
+    """--set の値文字列を SCHEMA の型に変換する。unknown key は str として保存。"""
+    if not raw:
+        raise ValueError(f"値が空です (key: {key!r})")
+    if key not in _stg.SCHEMA:
+        return raw
+    _, _, typ = _stg.SCHEMA[key]
+    try:
+        if typ is int:
+            return int(raw)
+        if typ is float:
+            return float(raw)
+        return raw
+    except (ValueError, TypeError):
+        raise ValueError(f"{key}: {typ.__name__} に変換できません: {raw!r}") from None
+
+
+def _validate_typed_value(key: str, value: Any) -> Any:
+    """--json の型済み値を SCHEMA に対して検証する。unknown key はそのまま通す。"""
+    if value is None:
+        raise ValueError(f"null は許可されていません (key: {key!r})")
+    if key not in _stg.SCHEMA:
+        return value
+    _, _, expected_type = _stg.SCHEMA[key]
+    # bool は int のサブクラスなので先にチェック
+    if isinstance(value, bool):
+        raise TypeError(f"{key}: bool は使用できません")
+    if expected_type is float:
+        if not isinstance(value, (int, float)):
+            raise TypeError(
+                f"{key}: number が必要ですが {type(value).__name__} が指定されました"
+            )
+        return float(value)
+    if not isinstance(value, expected_type):
+        raise TypeError(
+            f"{key}: {expected_type.__name__} が必要ですが {type(value).__name__} が指定されました"
+        )
+    return value
+
+
+def _validate_json_patch(patch: Any) -> Dict[str, Any]:
+    """--json の入力を検証しフラット dict を返す。"""
+    if not isinstance(patch, dict):
+        raise ValueError(
+            f"--json: トップレベルは object である必要があります (got {type(patch).__name__})"
+        )
+    for sec_key, sec_val in patch.items():
+        if sec_key in _KNOWN_SECTIONS and not isinstance(sec_val, dict):
+            raise ValueError(
+                f"--json: '{sec_key}' は object である必要があります (got {type(sec_val).__name__})"
+            )
+    flat = _flatten(patch)
+    result: Dict[str, Any] = {}
+    for key, value in flat.items():
+        result[key] = _validate_typed_value(key, value)
+    return result
+
+
+def _apply_patches(
+    flat_current: Dict[str, Any],
+    set_pairs: List[str],
+    json_patch: Optional[str],
+) -> Dict[str, Any]:
+    """--json → --set の順でパッチを適用する。既存キーは保持する。"""
+    result = flat_current.copy()
+
+    if json_patch is not None:
+        try:
+            patch_obj = json.loads(json_patch)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"--json: JSON パースエラー: {e}") from e
+        patch_flat = _validate_json_patch(patch_obj)
+        result.update(patch_flat)
+
+    for pair in set_pairs:
+        if "=" not in pair:
+            raise ValueError(f"--set: 'KEY=VALUE' の形式で指定してください: {pair!r}")
+        key, _, raw_value = pair.partition("=")
+        _validate_key(key)
+        result[key] = _coerce_str_value(key, raw_value)
+
+    return result
+
+
+def _show_dry_run_diff(
+    out: Any,
+    settings_path: Path,
+    flat_before: Dict[str, Any],
+    flat_after: Dict[str, Any],
+    *,
+    was_missing: bool,
+) -> None:
+    """dry-run 時の変更予定を表示する。"""
+    if was_missing:
+        out.write(f"Would create: {settings_path}\n")
+    for key, new_val in flat_after.items():
+        old_val = flat_before.get(key)
+        if old_val != new_val:
+            old_display = "<unset>" if key not in flat_before else old_val
+            out.write(f"{key}: {old_display} -> {new_val}\n")
+
+
+# ---------------------------------------------------------------------------
 # run_config: メイン処理
 # ---------------------------------------------------------------------------
 
 
 def run_config(ctx: ConfigContext) -> int:
-    """設定ファイルを対話編集して保存する。
+    """設定ファイルを編集して保存する。
 
+    --set / --json が指定された場合は非対話モード（TTY 不要）。
+    それ以外は TTY 必須の対話モード。
     戻り値は exit code (0/1)。
     """
     out = ctx.out_stream or sys.stdout
     err = ctx.err_stream or sys.stderr
+
+    non_interactive = bool(ctx.set_pairs or ctx.json_patch)
+
+    # -----------------------------------------------------------------------
+    # 非対話モード (B-109)
+    # -----------------------------------------------------------------------
+    if non_interactive:
+        if ctx.user_setting:
+            settings_path = _stg.user_settings_path()
+        else:
+            found = _find_settings_file(ctx.cwd)
+            settings_path = found[1] if found is not None else ctx.cwd / "vvread.settings.json"
+
+        was_missing = not settings_path.exists()
+
+        if not was_missing:
+            data, load_err = _load_vvread_settings(settings_path)
+            if load_err:
+                err.write(f"ERROR: {settings_path}: {load_err}\n")
+                return 1
+        else:
+            data = {}
+
+        flat_current = _flatten(data)
+
+        try:
+            merged_flat = _apply_patches(flat_current, ctx.set_pairs, ctx.json_patch)
+        except (ValueError, TypeError) as e:
+            err.write(f"ERROR: {e}\n")
+            return 1
+
+        if ctx.dry_run:
+            _show_dry_run_diff(out, settings_path, flat_current, merged_flat,
+                               was_missing=was_missing)
+            return 0
+
+        new_data = _unflatten(merged_flat)
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            _save_vvread_settings(settings_path, new_data)
+        except OSError as e:
+            err.write(f"ERROR: {settings_path}: cannot write: {e}\n")
+            return 1
+
+        out.write(f"Updated: {settings_path}\n")
+        return 0
+
+    # -----------------------------------------------------------------------
+    # 対話モード (B-014, B-107)
+    # -----------------------------------------------------------------------
 
     # TTY チェック
     tty_err = _require_tty(ctx)
@@ -374,17 +549,20 @@ def run_config(ctx: ConfigContext) -> int:
         return 1
 
     # 設定ファイルを探す
-    found = _find_settings_file(ctx.cwd)
+    found = _find_settings_file(ctx.cwd, user_setting=ctx.user_setting)
     if found is None:
         if ctx.create:
-            path = ctx.cwd / "vvread.settings.json"
+            path = (
+                _stg.user_settings_path() if ctx.user_setting
+                else ctx.cwd / "vvread.settings.json"
+            )
             if ctx.dry_run:
                 out.write(f"DRY-RUN: {path} を新規作成します\n")
                 return 0
             if not path.exists():
-                import json as _json
-                path.write_text(_json.dumps({}, ensure_ascii=False), encoding="utf-8")
-            found = ("project", path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({}, ensure_ascii=False), encoding="utf-8")
+            found = ("user" if ctx.user_setting else "project", path)
         else:
             err.write(
                 "設定ファイルが見つかりません。\n"
@@ -460,7 +638,7 @@ def run_config(ctx: ConfigContext) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="vvread.settings.json を対話式に編集する"
+        description="vvread.settings.json を編集する"
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -468,11 +646,30 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--create", action="store_true",
-        help="設定ファイルが存在しない場合は新規作成してから編集を開始",
+        help="設定ファイルが存在しない場合は新規作成してから編集を開始（対話モード専用）",
+    )
+    parser.add_argument(
+        "--user-setting", action="store_true",
+        help="プロジェクト設定の代わりにユーザー設定ファイルを対象にする",
+    )
+    parser.add_argument(
+        "--set", dest="set_pairs", action="append", metavar="KEY=VALUE",
+        default=[],
+        help="非対話モード: 単一キーを設定する（複数指定可、後勝ち）",
+    )
+    parser.add_argument(
+        "--json", dest="json_patch", metavar="JSON",
+        help="非対話モード: JSON オブジェクトで複数キーを一括設定する",
     )
     args = parser.parse_args(argv)
 
-    ctx = ConfigContext(dry_run=args.dry_run, create=args.create)
+    ctx = ConfigContext(
+        dry_run=args.dry_run,
+        create=args.create,
+        user_setting=args.user_setting,
+        set_pairs=args.set_pairs or [],
+        json_patch=args.json_patch,
+    )
     return run_config(ctx)
 
 

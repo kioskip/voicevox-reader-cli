@@ -20,6 +20,20 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.2.1] - 2026-05-16
+
+### Added
+
+- `vvread config --set KEY=VALUE` / `--json '{...}'`: TTY 不要の非対話モードを追加。スクリプト・CI・Claude Code Stop hook からの設定変更が可能になった。ファイル不在時は `{}` から自動作成するため `--create` は不要。
+- `vvread config --user-setting`: プロジェクト設定の代わりにユーザースコープ設定ファイルを対象にするオプションを追加。`--set`/`--json` との組み合わせで非対話にユーザー設定を変更できる。
+- `vvread config --dry-run` が非対話モード（`--set`/`--json`）でも有効に。差分サマリを表示し、ファイルは変更しない。
+
+### Changed
+
+- `vvread config` の出力をシンプル化。成功時は `Updated: <path>` のみを表示し、終了コードを 0（成功）/ 1（失敗）に統一した。
+
+---
+
 ## [0.2.0] - 2026-05-16
 
 ### Added
