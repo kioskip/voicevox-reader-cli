@@ -38,8 +38,11 @@ This tool **does not include VOICEVOX Engine, VOICEVOX Core, or any voice librar
 
 | OS / Shell | Support | Notes |
 |---|---|---|
-| **macOS** (Intel / Apple Silicon) | tested | Plays through `afplay`. |
-| **Linux / WSL2** (Ubuntu / Debian / Arch, etc.) | untested | Auto-selects in this order: `paplay` > `pw-play` > `aplay` > `play` (sox) > `ffplay`. WSL2 routes audio through WSLg. |
+| **macOS** (Intel / Apple Silicon) | ✅ first-class | Plays through `afplay`. |
+| **Linux** (Ubuntu / Debian / Arch, etc.) | ✅ first-class | Auto-selects in this order: `paplay` > `pw-play` > `aplay` > `play` (sox) > `ffplay`. |
+| **WSL2** | ✅ first-class | Treated as Linux. Audio output via WSLg. |
+| **Windows + Git Bash** | ⚠️ best-effort | No playback (no player binary). CLI-only (`vvread synth`, etc.). |
+| **Windows native (PowerShell / cmd.exe)** | ❌ unsupported | Use WSL2 or Git Bash. |
 
 ### Required dependencies
 
@@ -89,18 +92,32 @@ Default URL: `http://127.0.0.1:50021` (override via `VOICEVOX_ENGINE_URL` or `vv
 
 ## 4. Quick start
 
+### 1. Start VOICEVOX Engine
+
 ```bash
-# 0. Make sure VOICEVOX Engine is running (see 3-2)
+# Using Docker (recommended):
+docker run --rm -p 50021:50021 voicevox/voicevox_engine:cpu-latest
 
-# 1. After install, run the interactive setup
-#    (run from inside the project you want to enable)
+# Or launch the VOICEVOX GUI app.
+```
+
+### 2. Set up vvread
+
+```bash
+# Run inside the project you want to enable
 vvread setup
+```
 
-# 2. Smoke test
-vvread "テスト"
+`vvread setup` will interactively ask:
+- VOICEVOX Engine URL (default `http://127.0.0.1:50021`)
+- Speaker ID for synthesis
+- Whether to register the Claude Code Stop hook
 
-# 3. Health check
-vvread doctor
+### 3. Test it
+
+```bash
+vvread "テスト"    # smoke test
+vvread doctor      # health check
 ```
 
 After this, starting Claude Code will automatically speak each response aloud.
@@ -109,191 +126,40 @@ After this, starting Claude Code will automatically speak each response aloud.
 
 ## 5. CLI reference
 
-### 5-1. Speech
+Detailed command references are currently available in Japanese:
+- [COMMANDS.md](COMMANDS.md)
+- [CONFIGURATION.md](CONFIGURATION.md)
 
-| Command | Description |
-|---|---|
-| `vvread <text> [--speaker N]` | Synthesize and play text directly. |
-| `vvread file <path> [--speaker N]` | Read a file aloud. |
-| `cat file \| vvread [--speaker N]` | Read stdin aloud (piped input only). |
-| `vvread say <text> [--speaker N]` | Same as above; legacy compatible form. |
-| `vvread synth <text> --output FILE [--speaker N]` | Synthesize only. Writes wav to `FILE` (does not play). |
-| `vvread play <wav>` | Play an existing wav file. |
-| `vvread on-stop` | Entry point for Claude Code's Stop hook (do not invoke manually). |
-
-#### Examples
+### Common commands
 
 ```bash
-vvread "ビルドが完了しました"
-vvread file /tmp/summary.txt
-cat build.log | vvread
-vvread synth "おはようございます" --output morning.wav --speaker 1
-vvread play morning.wav
+vvread "text"                  # speak text
+vvread file README.md          # read a file aloud
+cat build.log | vvread         # pipe input
+vvread stop                    # stop playback
+vvread doctor                  # health check
 ```
-
-#### Notes
-
-- **Subcommand names are never treated as text.** `vvread doctor` runs the doctor command; to speak the word "doctor", use `vvread say "doctor"`.
-- **Options must come after the text.** `vvread "hello" --speaker 8` works; `vvread --speaker 8 "hello"` does not.
-- **Only explicit pipe input is detected.** `cat file | vvread` works; redirect (`vvread < file`) is not supported — use `vvread file <path>` instead.
-
-### 5-2. Control
-
-| Command | Description |
-|---|---|
-| `vvread stop` | Immediately stop the current playback (subsequent speech is still accepted). |
-| `vvread mute <duration>` | Mute for a fixed duration (e.g. `30s`, `5m`, `2h`). |
-| `vvread off` | Disable persistently (until `vvread on`). |
-| `vvread on` | Re-enable. |
-| `vvread status` | Show the current state. |
-| `vvread clean` | Delete orphan temporary wav files (does not touch cache or log). |
-
-### 5-3. Setup & hooks
-
-| Command | Description |
-|---|---|
-| `vvread setup [--yes]` | Interactive setup (engine reachability check + e2k + Claude hook registration). |
-| `vvread install [--scope SCOPE] [--yes] [--dry-run]` | Register the Claude Code hook interactively (TTY) or with `--yes` for non-interactive use. |
-| `vvread uninstall [--scope SCOPE]` | Unregister the hook. |
-| `vvread speakers` | List available speaker/style IDs from the VOICEVOX Engine. |
-| `vvread config [--create] [--dry-run]` / `vvread edit` | Interactively edit `vvread.settings.json` (TTY required). `--create` creates the file if it doesn't exist before opening the editor; `--dry-run` previews changes without saving. |
-| `vvread doctor [--offline]` | Health check. |
-
-#### `--scope` values
-
-| Scope | Target file | Use case |
-|---|---|---|
-| `project-local` (default) | `<cwd>/.claude/settings.local.json` | Gitignored by default; safest option. |
-| `project` | `<cwd>/.claude/settings.json` | Use when sharing hook config with a team. |
-| `user` | `~/.claude/settings.json` | Enables voiceClaude for every project. |
-
-```bash
-vvread install                        # interactive: prompts for scope + speaker
-vvread install --yes                  # non-interactive, project-local (default)
-vvread install --scope user --yes     # non-interactive, all projects
-vvread speakers                       # list speaker IDs
-vvread config                         # edit settings interactively
-```
-
-### 5-4. Sample `vvread doctor` output
-
-```
-$ vvread doctor
-[OK] OS              : darwin (24.6.0)
-[OK] shell           : bash 5.2.21
-[OK] python          : 3.12.4
-[OK] vvread PATH     : /Users/foo/.local/bin/vvread
-[OK] VOICEVOX URL    : http://127.0.0.1:50021 (source: project settings)
-[OK]   /version      : 0.21.1
-[OK]   /speakers     : 81 entries
-[OK]   speaker=3     : ずんだもん (ノーマル)
-[OK] jq              : 1.7.1
-[--] docker          : not installed (optional under engine=existing)
-[OK] uv              : 0.4.18
-[OK] e2k             : importable
-[OK] hook (user)     : registered (1 entry)
-[OK]   command       : /Users/foo/.local/bin/vvread on-stop
-[--] hook (project)  : not registered
-[OK] settings.json   : valid JSON, no duplicates
-[OK] paths           : state=~/Library/Application Support/vvread/
-                       log=~/Library/Logs/vvread/
-                       cache=~/Library/Caches/vvread/
-```
-
-Failing rows are tagged `[NG]` and include a recovery command.
 
 ---
 
 ## 6. Configuration
 
-### 6-1. Configuration files / precedence
+Detailed configuration references are currently available in Japanese:
+- [CONFIGURATION.md](CONFIGURATION.md)
 
-```
-CLI option > environment variable > project settings > user settings > default
-```
-
-The configuration file is **`vvread.settings.json`** (JSONC line comments `//` are supported).
-
-#### Lookup order
-
-| Kind | Path | Use case |
-|---|---|---|
-| **project** | `<cwd>/vvread.settings.json` | Project-specific synthesis parameters, etc. |
-| **user** | macOS: `~/Library/Application Support/vvread/settings.json`<br/>Linux/WSL: `${XDG_CONFIG_HOME:-~/.config}/vvread/settings.json` | Defaults shared across all projects. |
-
-#### Schema example
-
-Copy [`vvread.settings.example.json`](vvread.settings.example.json) and edit. Minimal example:
+### Basic example
 
 ```jsonc
 {
   "voicevox": {
     "engineUrl": "http://127.0.0.1:50021",
     "speaker": 3,
-    "speed": 1.5,
-    "maxChars": 500,   // 0 = no limit (internally capped at 9999)
-    "chunkChars": 200,
-    "chunkHardMax": 400,
-    "inlineCodeLimit": 25
-  },
-  "log": {
-    "level": "INFO"
+    "speed": 1.5
   }
 }
 ```
 
-Run `vvread doctor` to print every active key, its current value, and where it came from (env / project / user / default).
-
-### 6-2. Environment variables
-
-Every key in `vvread.settings.json` can also be set through an environment variable. Precedence: **env > project settings > user settings**.
-
-#### Connection
-
-| Variable | Default | Description |
-|---|---|---|
-| `VOICEVOX_ENGINE_URL` | `http://127.0.0.1:50021` | Base URL for VOICEVOX Engine. |
-
-#### Synthesis parameters
-
-| Variable | Default | Description |
-|---|---|---|
-| `VOICEVOX_SPEAKER` | `3` | Speaker ID (look up via `vvread doctor`). |
-| `VOICEVOX_SPEED` | `1.5` | Speed multiplier. |
-| `VOICEVOX_PITCH` | `0` | Pitch shift. |
-| `VOICEVOX_INTONATION` | `1.0` | Intonation scale. |
-| `VOICEVOX_VOLUME` | `1.0` | Volume. |
-| `VOICEVOX_PAUSE_SCALE` | `1.0` | Pause-length scale. |
-| `VOICEVOX_PRE_PHONEME` | `0` | Silence before speech (seconds). |
-| `VOICEVOX_POST_PHONEME` | `0` | Silence after speech (seconds). |
-| `VOICEVOX_MAX_CHARS` | `500` | Max input length; excess is truncated. `0` means no limit (internally capped at 9999). |
-| `VOICEVOX_MAX_CHUNKS` | `0` | Max chunks to generate. `0` = no limit (default). Excess chunks are dropped with `(以下省略)` appended. |
-| `VOICEVOX_CHUNK_CHARS` | `200` | Target chars per chunk (2nd chunk onward). |
-| `VOICEVOX_CHUNK_HARD_MAX` | `400` | Hard maximum chars per chunk. |
-| `VOICEVOX_INLINE_CODE_LIMIT` | `25` | Max inline-code length before abbreviating. |
-
-#### Logging / notifications
-
-| Variable | Default | Description |
-|---|---|---|
-| `VOICEVOX_LOG_LEVEL` | `INFO` | `OFF` / `INFO` / `DEBUG`. |
-| `VOICEVOX_LOG_MAX_BYTES` | `10485760` (10 MiB) | Rotates one generation (`.1`) on overflow. |
-| `VOICEVOX_NOTIFY_COOLDOWN` | `60` | Minimum interval (seconds) between failure notifications. |
-
-#### Path overrides
-
-| Variable | Purpose |
-|---|---|
-| `VVREAD_STATE_DIR` | session.id / playing.pid / disabled / mute_until / temp wav |
-| `VVREAD_LOG_DIR` | `speak.log` |
-| `VVREAD_CACHE_DIR` | wav cache |
-
-#### Per-OS defaults
-
-| OS | state | log | cache |
-|---|---|---|---|
-| macOS | `~/Library/Application Support/vvread/` | `~/Library/Logs/vvread/` | `~/Library/Caches/vvread/` |
-| Linux / WSL | `${XDG_STATE_HOME:-~/.local/state}/vvread/` | `${XDG_STATE_HOME:-~/.local/state}/vvread/logs/` | `${XDG_CACHE_HOME:-~/.cache}/vvread/` |
+Place `vvread.settings.json` in your project root, or use `vvread config` to edit it interactively.
 
 ---
 

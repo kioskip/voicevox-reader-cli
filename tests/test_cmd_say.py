@@ -320,8 +320,16 @@ class TestSessionTokenPreemption:
             stderr=subprocess.DEVNULL,
         )
         try:
-            # chunk 1 が synth/play 中になるよう少し待つ
-            time.sleep(0.6)
+            # chunk 1 の synthesis リクエストが届くまでポーリング（固定 sleep は負荷次第で flaky）
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                n = sum(1 for req in voicevox_mock["state"].requests
+                        if "/synthesis" in req["path"])
+                if n >= 1:
+                    break
+                time.sleep(0.05)
+            else:
+                pytest.fail("synthesis リクエストが届かなかった（タイムアウト）")
 
             # session.id を上書きして preempt
             (state_dir / "session.id").write_text("STALE_TOKEN_OVERRIDE")

@@ -20,6 +20,26 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.2.3] - 2026-05-18
+
+### Added
+
+- `publish/COMMANDS.md`: CLI リファレンス（日本語）を独立ファイルとして新規作成。`publish/README.md` §5 の詳細リファレンスを分離し、`vvread config --list` の出力例も追記。
+- `publish/CONFIGURATION.md`: 設定リファレンス（日本語）を独立ファイルとして新規作成。`publish/README.md` §6 の詳細内容を分離。
+
+### Changed
+
+- `publish/README.md` / `publish/README.en.md`: Quick Start（§4）に VOICEVOX Engine 起動コマンド（`docker run --rm -p 50021:50021 voicevox/voicevox_engine:cpu-latest`）を直書きし、§3 へのスクロールバックが不要になった。`vvread setup` の対話内容も 3 行で明記。
+- `publish/README.md` / `publish/README.en.md`: サポート環境テーブルを正確化。Linux・WSL2 を一級対応、Git Bash を best-effort、Windows native を対象外と明記（従来は「Linux 未テスト」などの不正確な表記が残っていた）。§5/§6 を `COMMANDS.md` / `CONFIGURATION.md` へのリンクに軽量化。
+- `README.md` / `README.ja.md`: 開発者・メンテナ向けに全面刷新。エンドユーザー向けのインストール手順を削除し、ワークフロー・リリース手順・ドキュメント索引・開発コマンドを追加。冒頭に利用者向け README への導線を追記。
+
+### Fixed
+
+- `README.ja.md` / `doc/01-setup.md` / `doc/04-observability.md`: `--scope project-shared`（deprecated alias）の表記を `project` / `project-local` / `user` に修正。
+- `tests/test_cmd_say.py`: preemption テストの固定 `time.sleep` をポーリングベースに変更し、全件テスト実行時の flaky を解消。
+
+---
+
 ## [0.2.2] - 2026-05-17
 
 ### Added
