@@ -42,8 +42,11 @@
 
 | OS / Shell | 対応度 | 備考 |
 |---|---|---|
-| **macOS**(Intel / Apple Silicon) | 対応（テスト済み） | 合成した wav を `afplay` で再生 |
-| **Linux / WSL2**(Ubuntu / Debian / Arch 等) | 対応（未テスト） | `paplay` > `pw-play` > `aplay` > `play`(sox) > `ffplay` の優先順で自動選択。WSL2 は WSLg 経由で音声出力 |
+| **macOS**(Intel / Apple Silicon) | ✅ 一級対応 | 合成した wav を `afplay` で再生 |
+| **Linux**(Ubuntu / Debian / Arch 等) | ✅ 一級対応 | `paplay` > `pw-play` > `aplay` > `play`(sox) > `ffplay` の優先順で自動選択 |
+| **WSL2** | ✅ 一級対応 | Linux と同一扱い。WSLg 経由で音声出力 |
+| **Windows + Git Bash** | ⚠️ best-effort | 再生不可（player バイナリ無し）。CLI 操作（`vvread synth` 等）のみ可 |
+| **Windows native (PowerShell / cmd.exe)** | ❌ 対象外 | WSL2 または Git Bash を推奨 |
 
 ### 依存
 
@@ -88,18 +91,32 @@ vvread doctor
 
 ## 4. クイックスタート
 
+### 1. VOICEVOX Engine を起動する
+
 ```bash
-# 0. VOICEVOX Engine を先に起動しておく（3-2 参照）
+# Docker を使う場合（推奨）:
+docker run --rm -p 50021:50021 voicevox/voicevox_engine:cpu-latest
 
-# 1. インストール後、対話セットアップ
-# ※ 有効にしたいプロジェクト内で実行
+# または VOICEVOX GUI アプリを起動する。
+```
+
+### 2. vvread をセットアップする
+
+```bash
+# 有効にしたいプロジェクト内で実行
 vvread setup
+```
 
-# 2. 動作確認
-vvread "テスト"
+`vvread setup` の対話では以下を聞かれます:
+- VOICEVOX Engine の URL（デフォルト `http://127.0.0.1:50021`）
+- 音声合成の話者 ID
+- Claude Code の Stop hook を登録するか
 
-# 3. ヘルスチェック
-vvread doctor
+### 3. 動作確認
+
+```bash
+vvread "テスト"       # 読み上げ確認
+vvread doctor         # ヘルスチェック
 ```
 
 これで Claude Code を起動すると、応答が自動で読み上げられます。
@@ -108,187 +125,37 @@ vvread doctor
 
 ## 5. CLI リファレンス
 
-### 5-1. 発話系
+詳細なコマンドリファレンスは [`COMMANDS.md`](COMMANDS.md) を参照してください。
 
-| コマンド | 説明 |
-|---|---|
-| `vvread <text> [--speaker N]` | テキストを直接読み上げ |
-| `vvread file <path> [--speaker N]` | ファイルの内容を読み上げ |
-| `cat file \| vvread [--speaker N]` | stdin を読み上げ（パイプ入力のみ対応） |
-| `vvread say <text> [--speaker N]` | テキストを合成して再生（互換形式） |
-| `vvread synth <text> --output FILE [--speaker N]` | 合成のみ。wav を FILE に書き出す（再生しない） |
-| `vvread play <wav>` | 既存 wav を再生 |
-| `vvread on-stop` | Claude Code の Stop hook 用エントリ（手動では呼ばない） |
-
-#### 例
+### よく使うコマンド
 
 ```bash
-vvread "ビルドが完了しました"
-vvread file /tmp/summary.txt
-cat build.log | vvread
-vvread synth "おはようございます" --output morning.wav --speaker 1
-vvread play morning.wav
+vvread "テキスト"              # 読み上げ
+vvread file README.md          # ファイルを読み上げ
+cat build.log | vvread         # パイプ入力
+vvread stop                    # 再生停止
+vvread doctor                  # ヘルスチェック
 ```
-
-### 5-2. 制御系
-
-| コマンド | 説明 |
-|---|---|
-| `vvread stop` | 再生中の音を即停止（次の発話は受け付ける） |
-| `vvread mute <duration>` | 一定時間ミュート（例: `30s`, `5m`, `2h`） |
-| `vvread off` | 永続オフ（`vvread on` まで） |
-| `vvread on` | 復帰 |
-| `vvread status` | 現状表示 |
-| `vvread clean` | 合成後に割り込みがあり消されなかった一時wavを掃除 |
-
-### 5-3. セットアップ & hook
-
-| コマンド | 説明 |
-|---|---|
-| `vvread setup [--yes]` | 対話セットアップ（engine 疎通確認 + e2k + Claude hook 登録） |
-| `vvread install [--scope SCOPE] [--yes] [--dry-run]` | Claude Code hook を対話式（TTY）または `--yes` で非対話登録 |
-| `vvread uninstall [--scope SCOPE]` | hook を解除 |
-| `vvread speakers` | VOICEVOX Engine から利用可能な speaker/style ID 一覧を表示 |
-| `vvread config [--set KEY=VALUE] [--json '{...}'] [--user-setting] [--create] [--dry-run]` / `vvread edit` | `vvread.settings.json` を編集。デフォルトは対話式（TTY 必須）。`--set`/`--json` で TTY 不要の非対話モードに切り替わる。`--user-setting` でユーザースコープのファイルを対象にする |
-| `vvread doctor [--offline]` | ヘルスチェック |
-
-#### `--scope` の値
-
-| Scope | 対象ファイル | 用途 |
-|---|---|---|
-| `project-local`（デフォルト） | `<cwd>/.claude/settings.local.json` | 通常は gitignore 対象。最も安全なデフォルト |
-| `project` | `<cwd>/.claude/settings.json` | チームで共有したい場合 |
-| `user` | `~/.claude/settings.json` | 全プロジェクトで有効化 |
-
-```bash
-vvread install                        # 対話式（scope・speaker を選択）
-vvread install --yes                  # 非対話、project-local（デフォルト）
-vvread install --scope user --yes     # 非対話、全プロジェクト対象
-vvread speakers                       # speaker ID 一覧を確認
-vvread config                               # 設定を対話編集（TTY）
-vvread config --set voicevox.speakerId=3    # 非対話: 単一キーを設定
-vvread config --json '{"voicevox.speakerId":3}' --user-setting  # ユーザースコープに設定
-```
-
-### 5-4. `vvread doctor` 出力例
-
-```
-$ vvread doctor
-[OK] OS              : darwin (24.6.0)
-[OK] shell           : bash 5.2.21
-[OK] python          : 3.12.4
-[OK] vvread PATH     : /Users/foo/.local/bin/vvread
-[OK] VOICEVOX URL    : http://127.0.0.1:50021 (source: project settings)
-[OK]   /version      : 0.21.1
-[OK]   /speakers     : 81 entries
-[OK]   speaker=3     : ずんだもん (ノーマル)
-[OK] jq              : 1.7.1
-[--] docker          : not installed (engine=existing なので任意)
-[OK] uv              : 0.4.18
-[OK] e2k             : importable
-[OK] hook (user)     : registered (1 entry)
-[OK]   command       : /Users/foo/.local/bin/vvread on-stop
-[--] hook (project)  : not registered
-[OK] settings.json   : valid JSON, no duplicates
-[OK] paths           : state=~/Library/Application Support/vvread/
-                       log=~/Library/Logs/vvread/
-                       cache=~/Library/Caches/vvread/
-```
-
-NG があれば各行に `[NG]` + 復旧コマンド例が併記されます。
 
 ---
 
 ## 6. 設定
 
-### 6-1. 設定ファイル / 優先順位
+詳細な設定リファレンスは [`CONFIGURATION.md`](CONFIGURATION.md) を参照してください。
 
-```
-CLIオプション > 環境変数 > project settings > user settings > default
-```
-
-設定ファイルは **`vvread.settings.json`** に書き込みます（JSONC 行コメント `//` 対応）。
-
-#### 探索順
-
-| 種類 | パス | 用途 |
-|---|---|---|
-| **project** | `<cwd>/vvread.settings.json` | プロジェクト固有の発話パラメータ等 |
-| **user** | macOS: `~/Library/Application Support/vvread/settings.json`<br/>Linux/WSL: `${XDG_CONFIG_HOME:-~/.config}/vvread/settings.json` | 全プロジェクト共通の既定 |
-
-#### 設定例
-
-リポ同梱の [`vvread.settings.example.json`](vvread.settings.example.json) をコピーして編集してください。最小例:
+### 基本設定例
 
 ```jsonc
 {
   "voicevox": {
     "engineUrl": "http://127.0.0.1:50021",
     "speaker": 3,
-    "speed": 1.5,
-    "maxChars": 500,   // 0 = 上限なし (内部 cap: 9999)
-    "chunkChars": 200,
-    "chunkHardMax": 400,
-    "inlineCodeLimit": 25
-  },
-  "log": {
-    "level": "INFO"
+    "speed": 1.5
   }
 }
 ```
 
-`vvread doctor` で有効な全キー・現在値・設定元（env / project / user / default）を確認できます。
-
-### 6-2. 環境変数一覧
-
-`vvread.settings.json` のキーは環境変数でも指定できます。優先順位は **環境変数 > project settings > user settings**。
-
-#### 接続
-
-| 変数 | 既定 | 説明 |
-|---|---|---|
-| `VOICEVOX_ENGINE_URL` | `http://127.0.0.1:50021` | VOICEVOX Engine の base URL |
-
-#### 発話パラメータ
-
-| 変数 | 既定 | 説明 |
-|---|---|---|
-| `VOICEVOX_SPEAKER` | `3` | 話者 ID（`vvread doctor` で確認可能） |
-| `VOICEVOX_SPEED` | `1.5` | 速度倍率 |
-| `VOICEVOX_PITCH` | `0` | ピッチ |
-| `VOICEVOX_INTONATION` | `1.0` | イントネーション |
-| `VOICEVOX_VOLUME` | `1.0` | 音量 |
-| `VOICEVOX_PAUSE_SCALE` | `1.0` | ポーズ長倍率 |
-| `VOICEVOX_PRE_PHONEME` | `0` | 発話前無音(秒) |
-| `VOICEVOX_POST_PHONEME` | `0` | 発話後無音(秒) |
-| `VOICEVOX_MAX_CHARS` | `500` | 入力 text の最大文字数（超過分は打ち切り）。`0` で上限なし（内部 cap: 9999） |
-| `VOICEVOX_MAX_CHUNKS` | `0` | 生成するチャンク数の上限。`0` で上限なし（デフォルト）。超過分は「以下省略」を付加して打ち切る |
-| `VOICEVOX_CHUNK_CHARS` | `200` | 2 チャンク目以降の目安文字数 |
-| `VOICEVOX_CHUNK_HARD_MAX` | `400` | チャンクの強制分割上限 |
-| `VOICEVOX_INLINE_CODE_LIMIT` | `25` | インラインコードの最大長。超えると「コマンド」等に短縮 |
-
-#### ログ / 通知
-
-| 変数 | 既定 | 説明 |
-|---|---|---|
-| `VOICEVOX_LOG_LEVEL` | `INFO` | `OFF` / `INFO` / `DEBUG` |
-| `VOICEVOX_LOG_MAX_BYTES` | `10485760` (10 MiB) | 超えたら 1 世代 rotate |
-| `VOICEVOX_NOTIFY_COOLDOWN` | `60` | 失敗通知の最小間隔(秒) |
-
-#### パス上書き
-
-| 変数 | 用途 |
-|---|---|
-| `VVREAD_STATE_DIR` | session.id / playing.pid / disabled / mute_until / 一時 wav |
-| `VVREAD_LOG_DIR` | `speak.log` |
-| `VVREAD_CACHE_DIR` | wav キャッシュ |
-
-#### OS 別の既定パス
-
-| OS | state | log | cache |
-|---|---|---|---|
-| macOS | `~/Library/Application Support/vvread/` | `~/Library/Logs/vvread/` | `~/Library/Caches/vvread/` |
-| Linux / WSL | `${XDG_STATE_HOME:-~/.local/state}/vvread/` | `${XDG_STATE_HOME:-~/.local/state}/vvread/logs/` | `${XDG_CACHE_HOME:-~/.cache}/vvread/` |
+設定ファイル（`vvread.settings.json`）をプロジェクトルートに置くか、`vvread config` コマンドで編集してください。
 
 ---
 
