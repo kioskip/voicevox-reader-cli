@@ -900,10 +900,15 @@ class TestSanitizeTruncate:
     # 反映されない。ここは truncate() を直接呼んで挙動を固定する
     def test_truncate_appends_suffix(self):
         out = sanitize.truncate("あ" * 30, max_chars=10)
-        assert out == "あ" * 10 + "(以下省略)"
+        assert out == "あ" * 10 + constants.TRUNCATION_SUFFIX
 
     def test_truncate_skips_when_under_limit(self):
         assert sanitize.truncate("短い", max_chars=10) == "短い"
+
+    def test_truncate_uses_truncation_suffix_constant(self):
+        # truncate() と split_into_chunks が同じ定数を使うことを確認
+        out = sanitize.truncate("あ" * 30, max_chars=5)
+        assert out.endswith(constants.TRUNCATION_SUFFIX)
 
 
 # ---------- split_into_chunks() ----------
@@ -1014,6 +1019,70 @@ class TestSplitIntoChunksCacheAware:
             is_cacheable=lambda s: s == "OK。",
         )
         assert chunks == ["OK。", "続きの文です。"]
+
+
+class TestSplitIntoChunksMaxChunks:
+    """max_chunks パラメータのテスト"""
+
+    def _make_text(self, n: int) -> str:
+        return "\n".join(f"文{i}です。" for i in range(n))
+
+    def test_max_chunks_zero_is_unlimited(self):
+        text = self._make_text(10)
+        chunks = sanitize.split_into_chunks(text, target=5, hard_max=30, first_target=5, max_chunks=0)
+        assert len(chunks) >= 5
+        assert not any(c.endswith(constants.TRUNCATION_SUFFIX) for c in chunks)
+
+    def test_max_chunks_truncates_to_limit(self):
+        text = self._make_text(10)
+        chunks = sanitize.split_into_chunks(text, target=5, hard_max=30, first_target=5, max_chunks=3)
+        assert len(chunks) == 3
+
+    def test_max_chunks_last_chunk_has_suffix(self):
+        text = self._make_text(10)
+        chunks = sanitize.split_into_chunks(text, target=5, hard_max=30, first_target=5, max_chunks=3)
+        assert chunks[-1].endswith(constants.TRUNCATION_SUFFIX)
+
+    def test_max_chunks_not_reached_no_suffix(self):
+        # max_chunks=10 だが実チャンク数は 3: suffix なし
+        text = "一文目。\n二文目。\n三文目。"
+        chunks = sanitize.split_into_chunks(text, target=5, hard_max=30, first_target=5, max_chunks=10)
+        assert len(chunks) >= 2  # 分割されていること
+        assert len(chunks) <= 10  # max_chunks 以下
+        assert not any(c.endswith(constants.TRUNCATION_SUFFIX) for c in chunks)
+
+    def test_max_chunks_one(self):
+        text = self._make_text(5)
+        chunks = sanitize.split_into_chunks(text, target=5, hard_max=30, first_target=5, max_chunks=1)
+        assert len(chunks) == 1
+        assert constants.TRUNCATION_SUFFIX in chunks[0]
+
+    def test_max_chunks_with_cache_aware(self):
+        text = "前置きです。OK。後続です。続きです。さらに続きます。"
+        chunks = sanitize.split_into_chunks(
+            text, target=200, hard_max=400, first_target=200,
+            max_chunks=2,
+            is_cacheable=lambda s: s == "OK。",
+        )
+        assert len(chunks) == 2
+        assert chunks[-1].endswith(constants.TRUNCATION_SUFFIX)
+
+    def test_max_chunks_suffix_not_doubled(self):
+        # maxChars で既に TRUNCATION_SUFFIX が付いたテキストでも二重付与されない
+        suffix = constants.TRUNCATION_SUFFIX
+        already_truncated = "一文目。" + suffix
+        chunks = sanitize.split_into_chunks(
+            already_truncated, target=200, hard_max=400, first_target=200, max_chunks=1
+        )
+        assert len(chunks) == 1
+        assert not chunks[0].endswith(suffix + suffix)
+        assert chunks[0].endswith(suffix)
+
+    def test_max_chunks_suffix_uses_truncation_suffix_constant(self):
+        # split_into_chunks の打ち切りが constants.TRUNCATION_SUFFIX を使うことを確認
+        text = self._make_text(10)
+        chunks = sanitize.split_into_chunks(text, target=5, hard_max=30, first_target=5, max_chunks=2)
+        assert chunks[-1].endswith(constants.TRUNCATION_SUFFIX)
 
 
 # ---------- 補助関数 ----------

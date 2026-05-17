@@ -64,7 +64,7 @@ Usage: vvread [<text>] [--speaker N]
   doctor [--offline]            ヘルスチェック
   setup [--engine MODE]         対話セットアップ
   speakers                      利用可能な speaker 一覧を表示
-  config                        設定をインタラクティブに編集
+  config [--list]               設定をインタラクティブに編集。--list で全キーと現在値を一覧表示
   edit                          config のエイリアス
 
 ヘルプ:

@@ -41,6 +41,7 @@ from constants import (
     CHUNK_HARD_MAX_DEFAULT,
     INLINE_CODE_LIMIT_DEFAULT,
     MAX_CHARS_DEFAULT,
+    MAX_CHUNKS_DEFAULT,
 )
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,7 @@ SCHEMA: Dict[str, Tuple[Any, Optional[str], type]] = {
     "voicevox.prePhoneme":  (0.0,  "VOICEVOX_PRE_PHONEME", float),
     "voicevox.postPhoneme": (0.0,  "VOICEVOX_POST_PHONEME", float),
     "voicevox.maxChars":         (MAX_CHARS_DEFAULT,         "VOICEVOX_MAX_CHARS",         int),
+    "voicevox.maxChunks":        (MAX_CHUNKS_DEFAULT,        "VOICEVOX_MAX_CHUNKS",        int),
     "voicevox.chunkChars":       (CHUNK_CHARS_DEFAULT,       "VOICEVOX_CHUNK_CHARS",       int),
     "voicevox.chunkHardMax":     (CHUNK_HARD_MAX_DEFAULT,    "VOICEVOX_CHUNK_HARD_MAX",    int),
     "voicevox.inlineCodeLimit":  (INLINE_CODE_LIMIT_DEFAULT, "VOICEVOX_INLINE_CODE_LIMIT", int),

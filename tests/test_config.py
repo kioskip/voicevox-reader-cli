@@ -871,3 +871,44 @@ class TestUpdatedMessage:
         lines = [l for l in out.getvalue().strip().splitlines() if l]
         assert len(lines) == 1
         assert lines[0].startswith("Updated:")
+
+
+# ---------------------------------------------------------------------------
+# --list フラグ
+# ---------------------------------------------------------------------------
+
+
+class TestListFlag:
+    def test_list_exits_zero(self, tmp_path):
+        out = io.StringIO()
+        ctx = cfg.ConfigContext(list_mode=True, cwd=tmp_path, out_stream=out, err_stream=io.StringIO())
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+
+    def test_list_shows_max_chunks(self, tmp_path):
+        out = io.StringIO()
+        ctx = cfg.ConfigContext(list_mode=True, cwd=tmp_path, out_stream=out, err_stream=io.StringIO())
+        cfg.run_config(ctx)
+        assert "voicevox.maxChunks" in out.getvalue()
+
+    def test_list_shows_all_schema_keys(self, tmp_path):
+        out = io.StringIO()
+        ctx = cfg.ConfigContext(list_mode=True, cwd=tmp_path, out_stream=out, err_stream=io.StringIO())
+        cfg.run_config(ctx)
+        output = out.getvalue()
+        import settings as _stg
+        for key in _stg.SCHEMA:
+            assert key in output
+
+    def test_list_works_without_tty(self, tmp_path):
+        # 非TTY環境（CI など）でも動作する
+        out = io.StringIO()
+        err = io.StringIO()
+        in_stream = io.StringIO()  # isatty() = False
+        ctx = cfg.ConfigContext(
+            list_mode=True, cwd=tmp_path,
+            in_stream=in_stream, out_stream=out, err_stream=err,
+        )
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert "voicevox.maxChunks" in out.getvalue()
