@@ -28,6 +28,8 @@ from constants import (
     INLINE_CODE_LIMIT_DEFAULT,
     MAX_CHARS_DEFAULT,
     MAX_CHARS_LIMIT,
+    MAX_CHUNKS_DEFAULT,
+    TRUNCATION_SUFFIX,
 )
 
 
@@ -65,6 +67,17 @@ CHUNK_HARD_MAX = _env_int("VOICEVOX_CHUNK_HARD_MAX", CHUNK_HARD_MAX_DEFAULT)
 
 # 最初のチャンクの目安文字数。初手の合成時間を短くして声出しまでのレイテンシを縮める
 FIRST_CHUNK_CHARS = _env_int("VOICEVOX_FIRST_CHUNK_CHARS", FIRST_CHUNK_CHARS_DEFAULT)
+
+# チャンク数の上限。0 は「上限なし」。負値は不正入力 → 0（無制限）にフォールバック。
+_max_chunks_raw = _env_int("VOICEVOX_MAX_CHUNKS", MAX_CHUNKS_DEFAULT)
+if _max_chunks_raw < 0:
+    sys.stderr.write(
+        f"vvread: VOICEVOX_MAX_CHUNKS={_max_chunks_raw} は無効な値です"
+        f"（0以上の整数を指定）。0（無制限）を使用します。\n"
+    )
+    MAX_CHUNKS = 0
+else:
+    MAX_CHUNKS = _max_chunks_raw
 
 
 # ---------- e2k(英単語 → カタカナ)フォールバック ----------
@@ -594,7 +607,7 @@ def transform_monaka(text: str) -> str:
 
 def truncate(text: str, max_chars: int = MAX_CHARS) -> str:
     if len(text) > max_chars:
-        return text[:max_chars] + "(以下省略)"
+        return text[:max_chars] + TRUNCATION_SUFFIX
     return text
 
 
@@ -665,6 +678,7 @@ def split_into_chunks(
     target: int = CHUNK_CHARS,
     hard_max: int = CHUNK_HARD_MAX,
     first_target: int = FIRST_CHUNK_CHARS,
+    max_chunks: int = MAX_CHUNKS,
     is_cacheable=None,
 ) -> List[str]:
     """テキストを発話単位のチャンクに分割する。
@@ -676,10 +690,22 @@ def split_into_chunks(
     is_cacheable: callable(sentence) -> bool。指定すると「文単位分解 +
     キャッシュ対象は独立 chunk、非対象は target を超えるまで合体バッファに
     溜める」というキャッシュ最適化モードで動作する。指定しなければ従来動作。
+
+    max_chunks: 生成するチャンクの最大数。0 は無制限。上限を超えた場合は
+    最後のチャンクに TRUNCATION_SUFFIX を付加して打ち切る。maxChars で既に
+    TRUNCATION_SUFFIX が付与されている場合は二重付与しない。
     """
     if is_cacheable is None:
-        return _split_traditional(text, target, hard_max, first_target)
-    return _split_with_cache_aware(text, target, hard_max, first_target, is_cacheable)
+        chunks = _split_traditional(text, target, hard_max, first_target)
+    else:
+        chunks = _split_with_cache_aware(text, target, hard_max, first_target, is_cacheable)
+
+    if max_chunks > 0 and len(chunks) > max_chunks:
+        chunks = chunks[:max_chunks]
+        if not chunks[-1].endswith(TRUNCATION_SUFFIX):
+            chunks[-1] = chunks[-1] + TRUNCATION_SUFFIX
+
+    return chunks
 
 
 def _split_traditional(text, target, hard_max, first_target) -> List[str]:

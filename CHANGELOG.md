@@ -20,6 +20,16 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.2.2] - 2026-05-17
+
+### Added
+
+- `voicevox.maxChunks` / `VOICEVOX_MAX_CHUNKS`: チャンク生成数の上限を設定できるようになった。`0` は無制限(デフォルト)、正値でその数を超えたチャンクを「以下省略」付加で打ち切る。`maxChars`(テキスト全体文字数上限)とは独立した制御。負値は警告後 `0` にフォールバック。
+- `vvread config --list`: 設定可能な全キーと現在の cascade 解決値を非対話で一覧表示する。非TTY環境でも実行可能。
+- `constants.TRUNCATION_SUFFIX`: 省略通知「(以下省略)」を定数化。`maxChars` と `maxChunks` の両方で共有し、将来の文言変更を一箇所で管理できるようにした。
+
+---
+
 ## [0.2.1] - 2026-05-16
 
 ### Added

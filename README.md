@@ -262,6 +262,7 @@ CLIオプション > 環境変数 > project settings > user settings > default
 | `VOICEVOX_PRE_PHONEME` | `0` | 発話前無音(秒) |
 | `VOICEVOX_POST_PHONEME` | `0` | 発話後無音(秒) |
 | `VOICEVOX_MAX_CHARS` | `500` | 入力 text の最大文字数（超過分は打ち切り）。`0` で上限なし（内部 cap: 9999） |
+| `VOICEVOX_MAX_CHUNKS` | `0` | 生成するチャンク数の上限。`0` で上限なし（デフォルト）。超過分は「以下省略」を付加して打ち切る |
 | `VOICEVOX_CHUNK_CHARS` | `200` | 2 チャンク目以降の目安文字数 |
 | `VOICEVOX_CHUNK_HARD_MAX` | `400` | チャンクの強制分割上限 |
 | `VOICEVOX_INLINE_CODE_LIMIT` | `25` | インラインコードの最大長。超えると「コマンド」等に短縮 |

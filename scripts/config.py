@@ -162,6 +162,18 @@ CONFIG_FIELDS: List[Tuple[str, str, type, Any, str]] = [
             "この文字数を超えると「以下省略」と言って切り上げます。"
         ),
     ),
+    (
+        "voicevox.maxChunks",
+        "Max chunks",
+        int,
+        0,
+        (
+            "# 最大チャンク数\n"
+            "1回の入力で生成するチャンク数の上限です。\n"
+            "この数を超えると最後に「以下省略」を付けて読み上げを打ち切ります。\n"
+            "0 を指定すると上限なし。"
+        ),
+    ),
 ]
 
 # 既知のトップレベルセクション（SCHEMA から導出）
@@ -180,6 +192,7 @@ class ConfigContext:
     user_setting: bool = False
     set_pairs: List[str] = field(default_factory=list)
     json_patch: Optional[str] = None
+    list_mode: bool = False
     cwd: Path = field(default_factory=Path.cwd)
     in_stream: Any = None
     out_stream: Any = None
@@ -492,6 +505,17 @@ def run_config(ctx: ConfigContext) -> int:
     out = ctx.out_stream or sys.stdout
     err = ctx.err_stream or sys.stderr
 
+    # -----------------------------------------------------------------------
+    # --list モード: 全設定キーと cascade 解決値を表示
+    # -----------------------------------------------------------------------
+    if ctx.list_mode:
+        settings = _stg.load(ctx.cwd)
+        for key in _stg.SCHEMA:
+            rv = settings.get(key)
+            val = rv.value if rv else ""
+            out.write(f"{key}\t{val}\n")
+        return 0
+
     non_interactive = bool(ctx.set_pairs or ctx.json_patch)
 
     # -----------------------------------------------------------------------
@@ -661,6 +685,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--json", dest="json_patch", metavar="JSON",
         help="非対話モード: JSON オブジェクトで複数キーを一括設定する",
     )
+    parser.add_argument(
+        "--list", dest="list_mode", action="store_true",
+        help="設定可能な全キーと現在値を表示する（非対話、非TTYでも実行可能）",
+    )
     args = parser.parse_args(argv)
 
     ctx = ConfigContext(
@@ -669,6 +697,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         user_setting=args.user_setting,
         set_pairs=args.set_pairs or [],
         json_patch=args.json_patch,
+        list_mode=args.list_mode,
     )
     return run_config(ctx)
 

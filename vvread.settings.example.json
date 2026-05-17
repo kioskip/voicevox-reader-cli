@@ -53,6 +53,13 @@
     // Override with env: VOICEVOX_MAX_CHARS
     "maxChars": 500,
 
+    // Maximum number of chunks to generate. Excess chunks are dropped and
+    // the suffix "(以下省略)" is appended to the last chunk.
+    // 0 means no limit (default). Negative values are treated as 0 with a warning.
+    // Default: 0 (unlimited)
+    // Override with env: VOICEVOX_MAX_CHUNKS
+    "maxChunks": 0,
+
     // Target character count per chunk (2nd chunk onward).
     // Default: 200
     // Override with env: VOICEVOX_CHUNK_CHARS

@@ -14,3 +14,9 @@ CHUNK_CHARS_DEFAULT: int = 200
 CHUNK_HARD_MAX_DEFAULT: int = 400
 INLINE_CODE_LIMIT_DEFAULT: int = 25
 FIRST_CHUNK_CHARS_DEFAULT: int = 30
+
+# チャンク数上限（0 = 無制限）
+MAX_CHUNKS_DEFAULT: int = 0
+
+# 省略通知（maxChars / maxChunks の両方で共有）
+TRUNCATION_SUFFIX: str = "(以下省略)"

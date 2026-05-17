@@ -267,6 +267,7 @@ Every key in `vvread.settings.json` can also be set through an environment varia
 | `VOICEVOX_PRE_PHONEME` | `0` | Silence before speech (seconds). |
 | `VOICEVOX_POST_PHONEME` | `0` | Silence after speech (seconds). |
 | `VOICEVOX_MAX_CHARS` | `500` | Max input length; excess is truncated. `0` means no limit (internally capped at 9999). |
+| `VOICEVOX_MAX_CHUNKS` | `0` | Max chunks to generate. `0` = no limit (default). Excess chunks are dropped with `(以下省略)` appended. |
 | `VOICEVOX_CHUNK_CHARS` | `200` | Target chars per chunk (2nd chunk onward). |
 | `VOICEVOX_CHUNK_HARD_MAX` | `400` | Hard maximum chars per chunk. |
 | `VOICEVOX_INLINE_CODE_LIMIT` | `25` | Max inline-code length before abbreviating. |
