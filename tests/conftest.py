@@ -7,6 +7,7 @@ voicevox_mock fixture は Python http.server で /audio_query / /synthesis を
 import json
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -128,6 +129,33 @@ def _make_voicevox_handler(state: VoicevoxMockState):
     return Handler
 
 
+def wait_for_file(path, timeout_sec=10, check_interval=0.05):
+    """ファイルの存在または条件を待機（動的タイムアウト付き）。
+
+    Args:
+        path: チェック対象のファイルパス (Path または str)
+        timeout_sec: 最大待機秒数（デフォルト 10 秒）
+        check_interval: チェック間隔（デフォルト 0.05 秒）
+
+    Raises:
+        TimeoutError: timeout_sec 秒を超えても条件が満たされない場合
+    """
+    path = Path(path) if isinstance(path, str) else path
+    start_time = time.time()
+
+    while True:
+        if path.exists():
+            return
+
+        elapsed = time.time() - start_time
+        if elapsed >= timeout_sec:
+            raise TimeoutError(
+                f"File not created within {timeout_sec} seconds: {path}"
+            )
+
+        time.sleep(check_interval)
+
+
 @pytest.fixture
 def voicevox_mock():
     """VOICEVOX Engine のモック HTTP server を localhost:任意ポートで起動する fixture。
@@ -149,5 +177,6 @@ def voicevox_mock():
         "state": state,
     }
 
+    state.reset()  # function スコープのため実質 no-op だが、将来の scope 変更への備え
     server.shutdown()
     thread.join(timeout=2)

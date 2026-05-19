@@ -19,7 +19,7 @@ def run_chunk_split(text: str, speaker: str = "3", python: str = PYTHON):
         f'source "{LIB_CHUNK}"; '
         f'vvread_chunk_split "{text}" "{speaker}" "{python}" "{REPO}/scripts"'
     )
-    return subprocess.run(["bash", "-c", full], capture_output=True, text=True)
+    return subprocess.run(["bash", "-c", full], capture_output=True, text=True, timeout=10)
 
 
 def test_chunk_split_normal():

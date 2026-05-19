@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -331,7 +332,10 @@ class TestUnknownKeys:
 
 
 def _run_cli(*args, env=None, cwd=None):
-    """settings.py を subprocess 起動。env は完全置換(VOICEVOX_*/VVREAD_* を継承させない)"""
+    """settings.py を subprocess 起動。env は完全置換(VOICEVOX_*/VVREAD_* を継承させない)。
+    cwd を省略すると /tmp に落ちる — リポジトリルートに vvread.settings.json があっても
+    デフォルト値テストが壊れないよう隔離する。
+    """
     base = {k: v for k, v in os.environ.items()
             if not (k.startswith("VOICEVOX_") or k.startswith("VVREAD_"))}
     if env:
@@ -341,7 +345,7 @@ def _run_cli(*args, env=None, cwd=None):
         env=base,
         capture_output=True,
         text=True,
-        cwd=cwd,
+        cwd=cwd if cwd is not None else tempfile.gettempdir(),
     )
 
 

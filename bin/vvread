@@ -18,9 +18,12 @@ set -euo pipefail
 # ===== 自身の path を symlink chain ごと解決 =====
 # user が `ln -s <repo>/bin/vvread ~/.local/bin/vvread` 形式で入れる前提。
 # symlink → symlink → 実体 のチェーンも辿る。
+# 注意: 無効 cwd（削除済みディレクトリ等）から実行すると bash プロセス起動時の
+#       C 初期化 (getcwd) が失敗し "shell-init: error" が 1 行出る。
+#       これはスクリプト実行前の bash 内部処理のため制御不能。動作自体は正常完了。(U-108)
 _vvread_source="${BASH_SOURCE[0]}"
 while [ -h "${_vvread_source}" ]; do
-  _vvread_dir="$(cd -P "$(dirname "${_vvread_source}")" && pwd)"
+  _vvread_dir="${_vvread_source%/*}"
   _vvread_source="$(readlink "${_vvread_source}")"
   # symlink target が相対パスなら symlink の置き場所を基準に解決
   case "${_vvread_source}" in
@@ -28,8 +31,11 @@ while [ -h "${_vvread_source}" ]; do
     *) _vvread_source="${_vvread_dir}/${_vvread_source}" ;;
   esac
 done
-VVREAD_BIN_DIR="$(cd -P "$(dirname "${_vvread_source}")" && pwd)"
-VVREAD_PROJECT_DIR="$(cd "${VVREAD_BIN_DIR}/.." && pwd)"
+case "${_vvread_source}" in
+  /*) VVREAD_BIN_DIR="${_vvread_source%/*}" ;;
+  *)  VVREAD_BIN_DIR="$(cd -P "$(dirname "${_vvread_source}")" && pwd)" ;;
+esac
+VVREAD_PROJECT_DIR="${VVREAD_BIN_DIR%/*}"
 VVREAD_SCRIPTS_DIR="${VVREAD_PROJECT_DIR}/scripts"
 
 # 後段の subcommand が利用できるよう export する(R-005 以降で参照予定)
@@ -136,6 +142,7 @@ case "${subcommand}" in
     ;;
   # 制御系: 既存 voice.sh 実装に委譲(R-005+ で本体統合予定)
   stop|mute|off|on|status|clean)
+    cd / 2>/dev/null || true
     exec "${VVREAD_SCRIPTS_DIR}/voice.sh" "${subcommand}" "$@"
     ;;
   # 発話系

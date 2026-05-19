@@ -17,6 +17,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from conftest import wait_for_file
+
 REPO = Path(__file__).resolve().parent.parent
 VVREAD = REPO / "bin" / "vvread"
 CMD_PLAY = REPO / "scripts" / "cmd" / "play.sh"
@@ -162,12 +164,7 @@ class TestPlaybackWithFakePlayer:
         r = run_play(str(wav), env_extra=env)
         assert r.returncode == 0, f"stderr={r.stderr}"
         # args.log を読んで wav パスが渡ったことを確認
-        # busy CI 対策で 5 秒まで待つ
-        for _ in range(100):
-            if args_log.exists():
-                break
-            time.sleep(0.05)
-        assert args_log.exists()
+        wait_for_file(args_log)
         recorded = args_log.read_text().splitlines()
         assert recorded == [str(wav)]
 
@@ -187,11 +184,7 @@ class TestPlaybackWithFakePlayer:
 
         r = run_play(str(wav), env_extra=env)
         assert r.returncode == 0, f"stderr={r.stderr}"
-        for _ in range(100):
-            if args_log.exists():
-                break
-            time.sleep(0.05)
-        assert args_log.exists()
+        wait_for_file(args_log)
         recorded = args_log.read_text().splitlines()
         assert recorded == ["-q", str(wav)]
 
@@ -281,11 +274,7 @@ class TestVvreadPlayerOverride:
 
         r = run_play(str(wav), env_extra=env)
         assert r.returncode == 0, f"stderr={r.stderr}"
-        for _ in range(100):
-            if args_log.exists():
-                break
-            time.sleep(0.05)
-        assert args_log.exists()
+        wait_for_file(args_log)
         recorded = args_log.read_text().splitlines()
         # ffplay は -nodisp -autoexit -loglevel quiet <wav> の順
         assert recorded == ["-nodisp", "-autoexit", "-loglevel", "quiet", str(wav)]

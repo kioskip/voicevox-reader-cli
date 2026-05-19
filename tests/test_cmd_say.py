@@ -17,6 +17,8 @@ import time
 import pytest
 from pathlib import Path
 
+from conftest import wait_for_file
+
 REPO = Path(__file__).resolve().parent.parent
 VVREAD = REPO / "bin" / "vvread"
 CMD_SAY = REPO / "scripts" / "cmd" / "say.sh"
@@ -52,6 +54,7 @@ def make_fake_player(
     *,
     args_log: Path | None = None,
     touch_on_run: Path | None = None,
+    marker_dir: Path | None = None,
     exit_code: int = 0,
     sleep_seconds: float = 0,
 ):
@@ -62,6 +65,10 @@ def make_fake_player(
         lines.append(f'printf "%s\\n" "$@" >> "{args_log}"')
     if touch_on_run:
         lines.append(f'touch "{touch_on_run}"')
+    if marker_dir:
+        # pid + $RANDOM でユニークなマーカーを書く
+        # date +%s%N は macOS(BSD date)で %N が literal になるため使わない
+        lines.append(f'touch "{marker_dir}/started_$$_$RANDOM"')
     if sleep_seconds > 0:
         lines.append(f"sleep {sleep_seconds}")
     lines.append(f"exit {exit_code}")
@@ -235,11 +242,7 @@ class TestMultipleChunks:
 
         # player は chunk ごとに 1 回呼ばれる(args.log 1 行 = 1 invocation で
         # afplay <wav> なので行数 = chunk 数)
-        for _ in range(100):
-            if args_log.exists():
-                break
-            time.sleep(0.05)
-        assert args_log.exists()
+        wait_for_file(args_log)
         invocations = args_log.read_text().splitlines()
         assert len(invocations) == expected
 
@@ -270,11 +273,10 @@ class TestStopOldPlayback:
             assert r.returncode == 0, f"stderr={r.stderr}"
 
             # 旧 process が kill されていること
-            for _ in range(20):
-                if old_proc.poll() is not None:
-                    break
-                time.sleep(0.05)
-            assert old_proc.poll() is not None, "旧 playback が kill されなかった"
+            try:
+                old_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pytest.fail("旧 playback が kill されなかった")
 
             # session.id が新しくなっていること
             new_session = (state_dir / "session.id").read_text().strip()
@@ -298,8 +300,12 @@ class TestSessionTokenPreemption:
         スキップして exit 0 で抜ける"""
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        # 1 chunk あたり 0.5 秒の擬似再生で観測ウィンドウを確保
-        make_fake_player(bin_dir, "afplay", exit_code=0, sleep_seconds=0.5)
+        # chunk 1 の play 開始を pid+nanosec のマーカーファイルで検知
+        play_marker_dir = tmp_path / "play_markers"
+        play_marker_dir.mkdir()
+        # 1 chunk あたり 1.0 秒の擬似再生で preempt チェックの観測ウィンドウを確保
+        make_fake_player(bin_dir, "afplay", exit_code=0, sleep_seconds=1.0,
+                         marker_dir=play_marker_dir)
 
         # 多 chunk テキスト(>= 3 chunk あれば preempt 観測可能)
         # default VOICEVOX_MAX_CHARS=500 で truncation がかかるため 4 chunk 程度
@@ -320,16 +326,18 @@ class TestSessionTokenPreemption:
             stderr=subprocess.DEVNULL,
         )
         try:
-            # chunk 1 の synthesis リクエストが届くまでポーリング（固定 sleep は負荷次第で flaky）
+            # synthesis >= 1 件 かつ play が実際に開始するまでポーリング
+            # synthesis だけでは prefetch で複数 chunk が投げ終わっている可能性があり不十分
             deadline = time.time() + 10
             while time.time() < deadline:
-                n = sum(1 for req in voicevox_mock["state"].requests
-                        if "/synthesis" in req["path"])
-                if n >= 1:
+                n_syn = sum(1 for req in voicevox_mock["state"].requests
+                            if "/synthesis" in req["path"])
+                play_begun = any(play_marker_dir.iterdir())
+                if n_syn >= 1 and play_begun:
                     break
                 time.sleep(0.05)
             else:
-                pytest.fail("synthesis リクエストが届かなかった（タイムアウト）")
+                pytest.fail("chunk 1 再生開始が観測できなかった（タイムアウト）")
 
             # session.id を上書きして preempt
             (state_dir / "session.id").write_text("STALE_TOKEN_OVERRIDE")

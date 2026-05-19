@@ -187,7 +187,10 @@ class TestPythonCli:
 
 
 def _expected_with_clean_env(fn, env_overrides):
-    """Python 側の期待値を、clean な VVREAD/XDG 状態で計算する"""
+    """Python 側の期待値を、clean な VVREAD/XDG 状態で計算する。
+    NOTE: os.environ を直接変更するため pytest-xdist で並列実行すると競合する。
+    現状は逐次実行のみ想定。
+    """
     saved = {key: os.environ.get(key) for key in _PATH_ENV_KEYS}
     saved["HOME"] = os.environ.get("HOME")
     try:

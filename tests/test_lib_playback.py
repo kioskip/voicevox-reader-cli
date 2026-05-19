@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import wait_for_file
+
 REPO = Path(__file__).resolve().parent.parent
 LIB_PLAYBACK = REPO / "scripts" / "lib" / "playback.sh"
 
@@ -321,13 +323,9 @@ class TestPlayAsync:
         try:
             # PID は数値で、起動直後は親プロセス(bash -c)子プロセスとして存在。
             # bash が抜けると orphan 化するが、sleep 60 で生存中。
-            # marker が touched されたことを 1 秒以内に確認
-            # busy CI で 1 秒では足りないケースがあるため 5 秒まで待つ
-            for _ in range(100):
-                if marker.exists():
-                    break
-                time.sleep(0.05)
-            assert marker.exists(), "fake player が走らなかった"
+            # marker が touched されたことを確認
+            # busy CI で 1 秒では足りないケースがあるため動的タイムアウトで対応
+            wait_for_file(marker)
         finally:
             _kill_pid_safely(pid)
 
@@ -349,12 +347,7 @@ class TestPlayAsync:
         pid = int(pid_file.read_text().strip())
         try:
             # args.log の生成を待つ(fake は touch 後 sleep 60)
-            # busy CI で 1 秒では足りないケースがあるため 5 秒まで待つ
-            for _ in range(100):
-                if args_log.exists():
-                    break
-                time.sleep(0.05)
-            assert args_log.exists()
+            wait_for_file(args_log)
             args = args_log.read_text().splitlines()
             assert args == ["-q", str(wav)]
         finally:
@@ -376,12 +369,8 @@ class TestPlayAsync:
 
         pid = int(pid_file.read_text().strip())
         try:
-            # busy CI で 1 秒では足りないケースがあるため 5 秒まで待つ
-            for _ in range(100):
-                if args_log.exists():
-                    break
-                time.sleep(0.05)
-            assert args_log.exists()
+            # args.log の生成を待つ
+            wait_for_file(args_log)
             args = args_log.read_text().splitlines()
             assert args == ["-nodisp", "-autoexit", "-loglevel", "quiet", str(wav)]
         finally:
