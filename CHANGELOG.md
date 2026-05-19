@@ -13,10 +13,18 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ### Added
 ### Changed
-### Deprecated
-### Removed
 ### Fixed
-### Security
+
+---
+
+## [0.2.4] - 2026-05-19
+
+### Fixed
+
+- `bin/vvread`: 無効な cwd（削除済みディレクトリ等）から `vvread off` / `on` 等の制御コマンドを実行した際に出る複数行の `shell-init` / `chdir` エラーを解消。直接実行・symlink 経由インストール（`~/.local/bin/vvread`）の両方に対応。5 行 → 1 行に削減（残 1 行は bash 起動時 C 初期化のため不可避） (U-107, F-110, U-108)
+- `kana_dict.py`: `.lua` 拡張子（`ドットルア`）と `critical`（`クリティカル`）の読み仮名を追加 (F-109)
+- `TestSessionTokenPreemption` flaky を解消。synthesis 検知条件を強化し、`marker_dir` で再生開始確認、`date +%s%N` の macOS 非互換も修正 (F-108)
+- テストスイート全 35 ファイルのポーリング統一・環境変数隔離・timeout 補完 (R-114)
 
 ---
 

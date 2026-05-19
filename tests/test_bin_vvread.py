@@ -30,13 +30,18 @@ def _path_env(tmp_path: Path) -> dict:
     }
 
 
-def run_vvread(*args, env_extra=None, cwd=None) -> subprocess.CompletedProcess:
-    base = os.environ.copy()
+def _clean_env(env_extra=None) -> dict:
+    base = {k: v for k, v in os.environ.items()
+            if not (k.startswith("VOICEVOX_") or k.startswith("VVREAD_"))}
     if env_extra:
         base.update(env_extra)
+    return base
+
+
+def run_vvread(*args, env_extra=None, cwd=None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(VVREAD), *args],
-        env=base,
+        env=_clean_env(env_extra),
         capture_output=True,
         text=True,
         cwd=cwd,

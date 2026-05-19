@@ -72,7 +72,8 @@ def env_no_notifier(tmp_path):
 
 def run_bash(env: dict, script: str, extra: dict | None = None):
     """env と extra を export した上で lib_notify.sh を source し、script を実行"""
-    base = os.environ.copy()
+    base = {k: v for k, v in os.environ.items()
+            if not (k.startswith("VOICEVOX_") or k.startswith("VVREAD_"))}
     base.update(env)
     if extra:
         base.update(extra)

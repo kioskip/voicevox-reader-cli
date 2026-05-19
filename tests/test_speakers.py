@@ -9,6 +9,7 @@ VOICEVOX Engine の /speakers API から話者一覧を取得・表示する機�
 """
 import io
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -258,17 +259,21 @@ class TestFetchAndDisplay:
 VVREAD = REPO / "bin" / "vvread"
 
 
+def _clean_env(env_extra=None) -> dict:
+    base = {k: v for k, v in os.environ.items()
+            if not (k.startswith("VOICEVOX_") or k.startswith("VVREAD_"))}
+    if env_extra:
+        base.update(env_extra)
+    return base
+
+
 class TestVvreadSpeakersCli:
     def test_unreachable_engine_exits_1(self, tmp_path):
-        import os
-        env = {k: v for k, v in os.environ.items()
-               if not k.startswith("VOICEVOX_")}
-        env["VOICEVOX_ENGINE_URL"] = "http://127.0.0.1:1"
         result = subprocess.run(
             [str(VVREAD), "speakers"],
             capture_output=True,
             text=True,
-            env=env,
+            env=_clean_env({"VOICEVOX_ENGINE_URL": "http://127.0.0.1:1"}),
             timeout=10,
         )
         assert result.returncode == 1
@@ -279,6 +284,7 @@ class TestVvreadSpeakersCli:
             [str(VVREAD), "speakers", "--engine-url", "http://127.0.0.1:1"],
             capture_output=True,
             text=True,
+            env=_clean_env(),
             timeout=10,
         )
         assert result.returncode == 1
@@ -290,6 +296,7 @@ class TestVvreadSpeakersCli:
                 [str(VVREAD), "speakers", "--engine-url", url],
                 capture_output=True,
                 text=True,
+                env=_clean_env(),
                 timeout=10,
             )
             assert result.returncode == 0

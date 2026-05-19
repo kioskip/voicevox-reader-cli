@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO / "scripts"
 
@@ -242,12 +244,11 @@ class TestVoiceStop:
             # playing.pid は消える
             assert not (state / "playing.pid").exists()
 
-            # 実際にプロセスが死んでいる(0.5 秒猶予)
-            for _ in range(10):
-                if proc.poll() is not None:
-                    break
-                time.sleep(0.05)
-            assert proc.poll() is not None, "対象プロセスが kill されていない"
+            # 実際にプロセスが死んでいる
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pytest.fail("対象プロセスが kill されていない")
         finally:
             if proc.poll() is None:
                 proc.kill()

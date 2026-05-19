@@ -17,7 +17,7 @@
 
 set -e
 
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT_DIR="${VVREAD_PROJECT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 # OS 別パス(R-001)+ 旧 tmp/ からの移行(R-003)
 # shellcheck source=./lib/paths.sh
@@ -38,7 +38,7 @@ MUTE_UNTIL_FILE="${STATE_DIR}/mute_until"
 # shellcheck disable=SC2034
 LOG_NAME="voice"
 # shellcheck source=./lib/log.sh
-source "$(dirname "$0")/lib/log.sh"
+source "${VVREAD_SCRIPTS_DIR:-$(dirname "$0")}/lib/log.sh"
 
 
 # ===== ヘルパー(状態の読み書き) =====

@@ -20,6 +20,8 @@ import time
 import urllib.parse
 from pathlib import Path
 
+from conftest import wait_for_file
+
 REPO = Path(__file__).resolve().parent.parent
 VVREAD = REPO / "bin" / "vvread"
 CMD_ON_STOP = REPO / "scripts" / "cmd" / "on_stop.sh"
@@ -228,11 +230,7 @@ class TestEngineHealthCheck:
         # log は LOG_DIR に出るので、log file の中に "engine unreachable" が
         # 入っていることを確認(stderr ではなく)
         log_file = tmp_path / "log" / "speak.log"
-        for _ in range(20):
-            if log_file.exists():
-                break
-            time.sleep(0.05)
-        assert log_file.exists(), "log file not created"
+        wait_for_file(log_file)
         content = log_file.read_text()
         assert "engine unreachable" in content
 
@@ -379,11 +377,7 @@ class TestStdinLimits:
 
         # log file に parse_transcript_warning が記録される
         log_file = tmp_path / "log" / "speak.log"
-        for _ in range(20):
-            if log_file.exists():
-                break
-            time.sleep(0.05)
-        assert log_file.exists()
+        wait_for_file(log_file)
         assert "parse_transcript_warning" in log_file.read_text()
 
 

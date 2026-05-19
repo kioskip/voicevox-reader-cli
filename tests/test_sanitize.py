@@ -206,8 +206,8 @@ class TestSanitizeBareHashAndPath:
         out = sanitize.sanitize("設定は ~/.config/nvim/init.lua にあります。")
         assert ".config" not in out
         assert "/nvim" not in out
-        # tail の init.lua がカナ化されて残る
-        assert "イニット" in out or "ドットルア" in out or "init" in out.lower()
+        # tail の init.lua がカナ化されて「イニットドットルア」になる
+        assert "イニットドットルア" in out
 
     def test_bare_two_segment_path_not_matched(self):
         # 2 セグメント /var/log は短いので変換しない(深さ閾値 ≥ 3)。
