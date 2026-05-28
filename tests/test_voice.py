@@ -131,9 +131,9 @@ class TestVoiceClean:
         assert not (state / "voice_OLD_abc_0.wav").exists()
         assert not (state / "voice_OLD_abc_0.wav.query.json").exists()
 
-    def test_does_not_touch_cache(self, project):
-        """CACHE_DIR 配下の wav は永続資産なので削除しない"""
-        cache_file = project["CACHE"] / "id74_sp13_abc.wav"
+    def test_removes_cached_wav(self, project):
+        """CACHE_DIR 配下の *.wav を削除する（T-012）"""
+        cache_file = project["CACHE"] / "spk3_abcd1234.wav"
         cache_file.write_bytes(b"x")
 
         # 一緒に orphan も置いて clean が走る状態を作る
@@ -141,8 +141,17 @@ class TestVoiceClean:
 
         r = run_voice(project, "clean")
         assert r.returncode == 0
-        assert cache_file.exists(), "cache が削除されている"
+        assert not cache_file.exists(), "cache が削除されていない"
         assert not (project["STATE"] / "voice_OLD_0.wav").exists()
+
+    def test_does_not_remove_non_wav_from_cache(self, project):
+        """CACHE_DIR 配下の wav 以外のファイルは残す"""
+        non_wav = project["CACHE"] / "metadata.json"
+        non_wav.write_text("{}")
+
+        r = run_voice(project, "clean")
+        assert r.returncode == 0
+        assert non_wav.exists(), "wav 以外が削除されている"
 
     def test_removes_legacy_query_json(self, project):
         """旧 QUERY_PREFIX 形式の query_*.json / .tuned を削除する(S-001 以前の遺物)"""

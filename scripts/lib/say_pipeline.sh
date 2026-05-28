@@ -25,7 +25,43 @@ source "$(dirname "${BASH_SOURCE[0]}")/os.sh"
 
 vvread_say_synth_chunk() {
   local idx="$1" text="$2" wav="$3" speaker="$4" chunk_total="$5"
-  voicevox_synthesize "${wav}" "${text}" "${speaker}" "$((idx + 1))/${chunk_total}"
+
+  local cache_key=""
+  if [ -n "${CACHE_DIR:-}" ]; then
+    if [ "${idx}" -eq 0 ] && [ "${VVREAD_CACHE_FIRST_CHUNK_RAW:-true}" = "true" ]; then
+      local _max="${VVREAD_CACHE_FIRST_CHUNK_RAW_MAX_CHARS:-100}"
+      cache_key=$( printf '%s' "${text}" | \
+        "${PYTHON}" "${VVREAD_SCRIPTS_DIR}/cache_key.py" --speaker "${speaker}" \
+          --cache-raw --cache-raw-max-chars "${_max}" \
+        2>/dev/null || true )
+    else
+      cache_key=$( printf '%s' "${text}" | \
+        "${PYTHON}" "${VVREAD_SCRIPTS_DIR}/cache_key.py" --speaker "${speaker}" \
+        2>/dev/null || true )
+    fi
+  fi
+
+  if [ -n "${cache_key}" ]; then
+    local cache_wav="${CACHE_DIR}/${cache_key}.wav"
+    if [ -f "${cache_wav}" ]; then
+      if cp "${cache_wav}" "${wav}" 2>/dev/null; then
+        log_debug "say cache_hit chunk=$((idx + 1))/${chunk_total} key=${cache_key}"
+        return 0
+      fi
+      log_debug "say cache_copy_fail chunk=$((idx + 1))/${chunk_total} key=${cache_key} fallback to synth"
+    fi
+  fi
+
+  # 合成失敗時は即返す。後続 if 文の終了コードに上書きされないよう明示的に伝播
+  voicevox_synthesize "${wav}" "${text}" "${speaker}" "$((idx + 1))/${chunk_total}" || return $?
+
+  if [ -n "${cache_key}" ] && [ -f "${wav}" ]; then
+    local tmp_wav="${CACHE_DIR}/${cache_key}.${$}.tmp"
+    if cp "${wav}" "${tmp_wav}" 2>/dev/null; then
+      mv "${tmp_wav}" "${CACHE_DIR}/${cache_key}.wav" 2>/dev/null || rm -f "${tmp_wav}" 2>/dev/null || true
+      log_debug "say cache_write chunk=$((idx + 1))/${chunk_total} key=${cache_key}"
+    fi
+  fi
 }
 
 # 1 chunk を再生する（同期、再生完了まで wait）。

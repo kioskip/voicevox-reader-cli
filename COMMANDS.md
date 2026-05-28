@@ -43,7 +43,7 @@ vvread play morning.wav
 | `vvread off` | 永続オフ（`vvread on` まで） |
 | `vvread on` | 復帰 |
 | `vvread status` | 現状表示 |
-| `vvread clean` | 合成後に割り込みがあり消されなかった一時 wav を掃除 |
+| `vvread clean` | 一時 wav の削除（割り込みで消されなかった合成済み wav）と wav キャッシュのクリアを行う |
 
 ---
 

@@ -7,11 +7,12 @@
 #   voice off               永続オフ(`voice on` まで)
 #   voice on                復帰
 #   voice status            現状表示
-#   voice clean             ${STATE_DIR} 内の orphan を一括削除。具体的には以下:
+#   voice clean             ${STATE_DIR} 内の orphan と ${CACHE_DIR} の wav を一括削除。具体的には以下:
 #                             - 別セッションの voice_*.wav / .wav.query.json / .wav.query.json.tuned
 #                             - 旧 QUERY_PREFIX 形式の query_*.json / .tuned(S-001 以前の遺物)
+#                             - ${CACHE_DIR}/*.wav（定型フレーズ wav キャッシュ）
 #                           現セッション(${STATE_DIR}/session.id)の voice_${current}_* は保護する。
-#                           ${CACHE_DIR}/、状態ファイル(session.id / playing.pid / disabled /
+#                           状態ファイル(session.id / playing.pid / disabled /
 #                           mute_until / last_notify)、prefix 無しファイル(test.wav 等)、
 #                           ${LOG_DIR}/ には触れない。
 
@@ -182,6 +183,12 @@ cmd_clean() {
   printf '%s\n' "${matches}" | xargs rm -f
   log_info "clean files=${count} session=${current}"
   echo "removed ${count} file(s)."
+
+  # CACHE_DIR の wav を全削除（macOS 互換）
+  if [ -d "${CACHE_DIR}" ]; then
+    find "${CACHE_DIR}" -type f -name "*.wav" -exec rm -f {} \; 2>/dev/null || true
+    log_info "clean: removed cached wav from ${CACHE_DIR}"
+  fi
 }
 
 cmd_status() {

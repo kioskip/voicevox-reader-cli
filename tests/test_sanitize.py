@@ -900,7 +900,7 @@ class TestSanitizeTruncate:
     # 反映されない。ここは truncate() を直接呼んで挙動を固定する
     def test_truncate_appends_suffix(self):
         out = sanitize.truncate("あ" * 30, max_chars=10)
-        assert out == "あ" * 10 + constants.TRUNCATION_SUFFIX
+        assert out == "あ" * 10 + "\n" + constants.TRUNCATION_SUFFIX
 
     def test_truncate_skips_when_under_limit(self):
         assert sanitize.truncate("短い", max_chars=10) == "短い"
@@ -1036,7 +1036,8 @@ class TestSplitIntoChunksMaxChunks:
     def test_max_chunks_truncates_to_limit(self):
         text = self._make_text(10)
         chunks = sanitize.split_into_chunks(text, target=5, hard_max=30, first_target=5, max_chunks=3)
-        assert len(chunks) == 3
+        # max_chunks=3 の本文チャンク + 独立「以下省略」チャンク = 4
+        assert len(chunks) == 4
 
     def test_max_chunks_last_chunk_has_suffix(self):
         text = self._make_text(10)
@@ -1054,8 +1055,9 @@ class TestSplitIntoChunksMaxChunks:
     def test_max_chunks_one(self):
         text = self._make_text(5)
         chunks = sanitize.split_into_chunks(text, target=5, hard_max=30, first_target=5, max_chunks=1)
-        assert len(chunks) == 1
-        assert constants.TRUNCATION_SUFFIX in chunks[0]
+        # 本文1チャンク + 独立「以下省略」チャンク = 2
+        assert len(chunks) == 2
+        assert chunks[-1] == constants.TRUNCATION_SUFFIX
 
     def test_max_chunks_with_cache_aware(self):
         text = "前置きです。OK。後続です。続きです。さらに続きます。"
@@ -1064,7 +1066,8 @@ class TestSplitIntoChunksMaxChunks:
             max_chunks=2,
             is_cacheable=lambda s: s == "OK。",
         )
-        assert len(chunks) == 2
+        # 本文2チャンク + 独立「以下省略」チャンク = 3
+        assert len(chunks) == 3
         assert chunks[-1].endswith(constants.TRUNCATION_SUFFIX)
 
     def test_max_chunks_suffix_not_doubled(self):
@@ -1202,7 +1205,7 @@ class TestMaxChars:
     def test_truncate_at_limit(self):
         text = "あ" * 600
         result = sanitize.truncate(text, 500)
-        assert result == "あ" * 500 + "(以下省略)"
+        assert result == "あ" * 500 + "\n" + "(以下省略)"
 
     def test_max_chars_zero_resolves_to_limit(self):
         """VOICEVOX_MAX_CHARS=0 → subprocess 内で MAX_CHARS が MAX_CHARS_LIMIT になる"""
