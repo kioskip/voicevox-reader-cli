@@ -226,8 +226,10 @@ class TestMultipleChunks:
         args_log = tmp_path / "args.log"
         make_fake_player(bin_dir, "afplay", args_log=args_log, exit_code=0)
 
-        # 200 char default を超え、複数 chunk になる句点入り text
-        text = "テストです。" * 100
+        # MAX_CHARS(デフォルト 500)を超えないが CHUNK_CHARS(200)を超えて複数 chunk になる text
+        # (settings.py 経由の MAX_CHARS と count_expected_chunks のデフォルトが食い違う
+        #  ことによる誤差を排除するため、意図的に 500 未満にする)
+        text = "テストです。" * 40  # 240 chars
         expected = count_expected_chunks(text, speaker="3")
         assert expected >= 2, f"テスト前提: 2 chunk 以上(実際 {expected})"
 

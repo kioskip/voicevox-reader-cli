@@ -80,6 +80,13 @@ CLIオプション > 環境変数 > project settings > user settings > default
 | `VOICEVOX_LOG_MAX_BYTES` | `10485760` (10 MiB) | 超えたら 1 世代 rotate |
 | `VOICEVOX_NOTIFY_COOLDOWN` | `60` | 失敗通知の最小間隔(秒) |
 
+### キャッシュ
+
+| 変数 | 既定 | 説明 |
+|---|---|---|
+| `VVREAD_CACHE_FIRST_CHUNK_RAW` | `true` | `true` の場合、1st chunk をキャッシュキー計算なしで raw テキストのまま wav キャッシュに登録する |
+| `VVREAD_CACHE_FIRST_CHUNK_RAW_MAX_CHARS` | `100` | raw キャッシュを適用する 1st chunk のテキスト文字数上限。超えると通常キャッシュに fallback |
+
 ### パス上書き
 
 | 変数 | 用途 |

@@ -30,7 +30,8 @@ VVREAD_SCRIPTS_DIR="${VVREAD_SCRIPTS_DIR:-${VVREAD_PROJECT_DIR}/scripts}"
 source "${VVREAD_SCRIPTS_DIR}/lib/paths.sh"
 STATE_DIR="$(vvread_state_dir)"
 LOG_DIR="$(vvread_log_dir)"
-mkdir -p "${STATE_DIR}" "${LOG_DIR}"
+CACHE_DIR="$(vvread_cache_dir)"
+mkdir -p "${STATE_DIR}" "${LOG_DIR}" "${CACHE_DIR}"
 
 # settings.py で設定を一括解決(env > project > user > default)
 # log.sh source より前に eval することで log.level も反映される

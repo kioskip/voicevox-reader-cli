@@ -607,7 +607,7 @@ def transform_monaka(text: str) -> str:
 
 def truncate(text: str, max_chars: int = MAX_CHARS) -> str:
     if len(text) > max_chars:
-        return text[:max_chars] + TRUNCATION_SUFFIX
+        return text[:max_chars] + "\n" + TRUNCATION_SUFFIX
     return text
 
 
@@ -703,7 +703,7 @@ def split_into_chunks(
     if max_chunks > 0 and len(chunks) > max_chunks:
         chunks = chunks[:max_chunks]
         if not chunks[-1].endswith(TRUNCATION_SUFFIX):
-            chunks[-1] = chunks[-1] + TRUNCATION_SUFFIX
+            chunks.append(TRUNCATION_SUFFIX)
 
     return chunks
 

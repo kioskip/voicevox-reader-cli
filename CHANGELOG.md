@@ -17,6 +17,20 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.2.5] - 2026-05-28
+
+### Added
+
+- `cache_key.py` / `cache_patterns.py`: 定型フレーズ（「了解しました」「以上です」等）の wav キャッシュ読み書きを実装。キャッシュヒット時は合成をスキップして既存 wav を再生し、初回のみ合成結果を自動保存する。キャッシュキーはテキスト正規化後の文字列 + speaker ID + 合成パラメータ（speed / pitch / intonation 等）から SHA-256 で生成する (T-008, R-104)
+- `VVREAD_CACHE_FIRST_CHUNK_RAW` 環境変数 / `cache.firstChunkRaw` 設定キー: 1st chunk をキャッシュキー計算なしで raw テキストのまま wav キャッシュに登録するオプションを追加。定型的な冒頭フレーズの初回合成レイテンシを削減できる (T-011)
+- `tests/test_cache_key.py`: `cache_key.py` / `cache_patterns.py` のユニットテストを新規作成。パターン追加時は positive + negative の両ケースを追加する規約を整備 (R-112)
+
+### Changed
+
+- `vvread clean`: `CACHE_DIR` 下の wav ファイルも削除対象に追加。従来は STATE_DIR / LOG_DIR のみが対象だったが、キャッシュ肥大化時に `vvread clean` 一発でリセットできるようになった (T-012)
+
+---
+
 ## [0.2.4] - 2026-05-19
 
 ### Fixed

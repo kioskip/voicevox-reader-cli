@@ -71,6 +71,10 @@ NORMALIZE_PATTERNS: List[Tuple[re.Pattern, str]] = [
     # === 確認質問 ===
     (re.compile(r"^これで進めて良いですか。?$"),
      "これで進めて良い{e}?"),
+
+    # === 省略系 ===
+    (re.compile(r"^\(以下省略\)$"),
+     "(以下省略)"),
 ]
 
 

@@ -20,3 +20,6 @@ MAX_CHUNKS_DEFAULT: int = 0
 
 # 省略通知（maxChars / maxChunks の両方で共有）
 TRUNCATION_SUFFIX: str = "(以下省略)"
+
+# 1st chunk raw キャッシュ
+CACHE_FIRST_CHUNK_RAW_MAX_CHARS_DEFAULT: int = 100
