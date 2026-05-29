@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import hook_status as _hs
 import json_file as _jf
 import settings as _stg
 
@@ -588,13 +589,54 @@ def run_config(ctx: ConfigContext) -> int:
                 path.write_text(json.dumps({}, ensure_ascii=False), encoding="utf-8")
             found = ("user" if ctx.user_setting else "project", path)
         else:
-            err.write(
-                "設定ファイルが見つかりません。\n"
-                "以下のいずれかで作成してください:\n"
-                "  vvread config --create   # 設定ファイルを新規作成して編集を開始\n"
-                "  vvread setup             # 対話式セットアップで設定ファイルを作成\n"
+            # --user-setting 時は hook 状態による project settings 自動作成はしない
+            hook_status_val = (
+                _hs.get_vvread_hook_status(ctx.cwd)
+                if not ctx.user_setting
+                else "none"
             )
-            return 1
+
+            if hook_status_val == "modern":
+                err.write(
+                    "設定ファイルが見つかりません。\n"
+                    "Claude Code hook は登録済みのため、このプロジェクト用の設定ファイルを新規作成します。\n"
+                )
+                path = ctx.cwd / "vvread.settings.json"
+                if ctx.dry_run:
+                    out.write(f"DRY-RUN: {path} を新規作成します\n")
+                    return 0
+                if not path.exists():
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps({}, ensure_ascii=False), encoding="utf-8")
+                found = ("project", path)
+
+            elif hook_status_val == "legacy":
+                err.write(
+                    "設定ファイルが見つかりません。\n"
+                    "旧形式の hook (scripts/on_stop.sh) が検出されました。\n"
+                    "先に hook を移行してください:\n"
+                    "  vvread uninstall && vvread install\n"
+                )
+                return 1
+
+            else:
+                if ctx.user_setting:
+                    err.write(
+                        "ユーザー設定ファイルが見つかりません。\n"
+                        "作成するには:\n"
+                        "  vvread config --user-setting --create\n"
+                    )
+                else:
+                    err.write(
+                        "設定ファイルが見つかりません。\n\n"
+                        "初回セットアップを行う場合:\n"
+                        "  vvread setup\n\n"
+                        "既に VOICEVOX Engine 等を準備済みで、hook だけ登録する場合:\n"
+                        "  vvread install\n\n"
+                        "設定ファイルだけ作成して編集する場合:\n"
+                        "  vvread config --create\n"
+                    )
+                return 1
 
     scope_label, settings_path = found
     out.write(f"設定ファイル: {settings_path}\n")
@@ -703,4 +745,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        # UX 優先で対話キャンセルを正常終了扱い (exit 0)。
+        # SIGINT の慣習 (exit 130) とは異なる意図的な設計判断。
+        # 非対話モード (--set/--json) 中の Ctrl+C も同様に exit 0 になる（許容範囲）。
+        sys.stderr.write("\nキャンセルしました。\n")
+        sys.exit(0)

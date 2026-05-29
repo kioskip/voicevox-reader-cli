@@ -553,7 +553,12 @@ def _emit_text(results: List[StepResult], stream: Any) -> None:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="vvread setup: VOICEVOX engine + e2k + Claude Code hook"
+        description=(
+            "vvread setup: 初回セットアップ。"
+            "VOICEVOX Engine 接続確認・依存確認（e2k）・Claude Code hook 登録・"
+            "project settings 作成をまとめて行う。"
+            "setup 後は vvread config を実行すると project settings を作成・編集できる状態になる。"
+        )
     )
     parser.add_argument(
         "--engine-url",
@@ -648,4 +653,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        # UX 優先で対話キャンセルを正常終了扱い (exit 0)。
+        # SIGINT の慣習 (exit 130) とは異なる意図的な設計判断。
+        sys.stderr.write("\nキャンセルしました。\n")
+        sys.exit(0)

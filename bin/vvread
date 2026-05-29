@@ -65,10 +65,10 @@ Usage: vvread [<text>] [--speaker N]
   clean                         古い一時ファイルを削除
 
 管理系:
-  install [--scope SCOPE]       Claude Code hook 登録
+  install [--scope SCOPE]       Claude Code hook を現在のプロジェクトに登録（hook のみ。初回は setup 推奨）
   uninstall [--scope SCOPE]     hook 登録解除
   doctor [--offline]            ヘルスチェック
-  setup [--engine MODE]         対話セットアップ
+  setup [--engine MODE]         初回セットアップ（Engine 接続確認・依存確認・hook 登録・project settings 作成を一括実行）
   speakers                      利用可能な speaker 一覧を表示
   config [--list]               設定をインタラクティブに編集。--list で全キーと現在値を一覧表示
   edit                          config のエイリアス

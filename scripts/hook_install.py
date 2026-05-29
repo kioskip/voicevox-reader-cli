@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import IO, Any, Dict, List, Optional, Tuple
 
 import json_file as _jf
+from hook_status import is_voiceclaude_hook, resolve_settings_path
 from lib_prompt import (
     is_tty as _is_tty,
     prompt_choice as _prompt_choice,
@@ -68,36 +69,10 @@ HOOK_ASYNC_DEFAULT = True
 
 
 # ---------------------------------------------------------------------------
-# scope path 解決
+# scope path 解決（hook_status.py に移動済み、ここからは re-export）
 # ---------------------------------------------------------------------------
 
-
-def resolve_settings_path(
-    scope: str,
-    *,
-    cwd: Optional[Path] = None,
-    home: Optional[Path] = None,
-) -> Path:
-    """scope に対応する settings.json の絶対パスを返す。
-
-    cwd / home は test 用 DI。default は現在の Path.cwd() / Path.home()。
-
-    scope マッピング (v0.1.2):
-      project-local -> <cwd>/.claude/settings.local.json
-      project       -> <cwd>/.claude/settings.json
-      user          -> ~/.claude/settings.json
-    """
-    if cwd is None:
-        cwd = Path.cwd()
-    if home is None:
-        home = Path.home()
-    if scope == "project-local":
-        return cwd / ".claude" / "settings.local.json"
-    if scope == "project":
-        return cwd / ".claude" / "settings.json"
-    if scope == "user":
-        return home / ".claude" / "settings.json"
-    raise ValueError(f"unknown scope: {scope!r}")
+# resolve_settings_path は hook_status から import 済み。
 
 
 def _resolve_scope_alias(scope: str) -> Tuple[str, Optional[str]]:
@@ -117,33 +92,10 @@ def _resolve_scope_alias(scope: str) -> Tuple[str, Optional[str]]:
 
 
 # ---------------------------------------------------------------------------
-# vvread hook 判定(doctor から共通化、drift 防止)
+# vvread hook 判定（hook_status.py に移動済み、ここからは re-export）
 # ---------------------------------------------------------------------------
 
-
-def is_voiceclaude_hook(
-    command: str,
-    repo_root: Optional[Path] = None,  # noqa: ARG001
-) -> bool:
-    """command 文字列が voiceClaude の Stop hook を指しているか判定。
-
-    判定ルール(doctor.py から移管した正本):
-    - "vvread on-stop" を含む(PATH 経由 or 絶対パス、空白 or タブ区切り)
-    - "/bin/vvread" を含み、引数 "on-stop" を含む(クォート有り無しの両対応)
-    - "scripts/on_stop.sh" を含む(legacy)
-
-    Note: repo_root 引数は後方互換のために残しているが、現在は参照しない。
-    条件 1〜3 で全ケースをカバーしているため、repo_root ベースの条件 4 を削除した。
-    """
-    if not isinstance(command, str):
-        return False
-    if "vvread on-stop" in command or "vvread\ton-stop" in command:
-        return True
-    if "/bin/vvread" in command and "on-stop" in command:
-        return True
-    if "scripts/on_stop.sh" in command or "/on_stop.sh" in command:
-        return True
-    return False
+# is_voiceclaude_hook は hook_status から import 済み。
 
 
 # ---------------------------------------------------------------------------
@@ -932,13 +884,25 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="vvread install / uninstall"
+        description=(
+            "vvread install / uninstall: "
+            "Claude Code hook を現在のプロジェクトに登録・解除する。"
+            "hook 登録のみが目的。VOICEVOX Engine の起動・依存確認は主目的ではない。"
+            "初回は通常 vvread setup を使い、別プロジェクトへの追加登録では install を使う。"
+            "setup の代替ではない。"
+        )
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     _all_scope_choices = list(SCOPES) + list(_DEPRECATED_SCOPE_ALIASES.keys())
 
-    p_install = sub.add_parser("install", help="register Claude Code Stop hook")
+    p_install = sub.add_parser(
+        "install",
+        help=(
+            "Claude Code hook を登録する。"
+            "初回は vvread setup 推奨。別プロジェクトへの追加登録に使う。"
+        ),
+    )
     p_install.add_argument(
         "--scope", choices=_all_scope_choices, default=DEFAULT_SCOPE,
         help=f"target settings scope (default: {DEFAULT_SCOPE})",
@@ -973,4 +937,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        # UX 優先で対話キャンセルを正常終了扱い (exit 0)。
+        # SIGINT の慣習 (exit 130) とは異なる意図的な設計判断。
+        sys.stderr.write("\nキャンセルしました。\n")
+        sys.exit(0)

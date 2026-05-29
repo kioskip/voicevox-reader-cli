@@ -242,7 +242,8 @@ class TestRunConfig:
 
     def test_no_settings_file_exits_1(self, tmp_path):
         with patch.object(cfg._stg, "user_settings_path",
-                          return_value=tmp_path / "nonexistent.json"):
+                          return_value=tmp_path / "nonexistent.json"), \
+             patch.object(cfg._hs, "get_vvread_hook_status", return_value="none"):
             ctx, out, err = _make_ctx(tmp_path, tty=True, input_text="")
             rc = cfg.run_config(ctx)
         assert rc == 1
@@ -912,3 +913,103 @@ class TestListFlag:
         rc = cfg.run_config(ctx)
         assert rc == 0
         assert "voicevox.maxChunks" in out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# F-112: hook 状態による project settings 自動作成
+# ---------------------------------------------------------------------------
+
+
+class TestF112HookStatusAutoCreate:
+    """F-112: vvread config が hook 状態に応じて settings ファイル未存在時の挙動を変える"""
+
+    def _make_ctx_no_user_settings(self, tmp_path, **kwargs):
+        """user settings が見つからない状態で ConfigContext を作る。"""
+        ctx, out, err = _make_ctx(tmp_path, **kwargs)
+        return ctx, out, err
+
+    def test_modern_hook_dry_run_shows_dry_run_message(self, tmp_path):
+        """settings なし + modern hook + --dry-run → DRY-RUN 表示 + exit 0"""
+        with patch.object(cfg._hs, "get_vvread_hook_status", return_value="modern"), \
+             patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            ctx, out, err = _make_ctx(tmp_path, tty=True, dry_run=True)
+            rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert "DRY-RUN" in out.getvalue()
+        assert not (tmp_path / "vvread.settings.json").exists()
+
+    def test_no_hook_shows_setup_install_hint(self, tmp_path):
+        """settings なし + hook なし → setup/install 案内 + exit 1"""
+        with patch.object(cfg._hs, "get_vvread_hook_status", return_value="none"), \
+             patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            ctx, out, err = _make_ctx(tmp_path, tty=True)
+            rc = cfg.run_config(ctx)
+        assert rc == 1
+        assert "vvread setup" in err.getvalue()
+        assert "vvread install" in err.getvalue()
+        assert "vvread config --create" in err.getvalue()
+
+    def test_legacy_hook_shows_migration_hint(self, tmp_path):
+        """settings なし + legacy hook → 移行案内 + exit 1"""
+        with patch.object(cfg._hs, "get_vvread_hook_status", return_value="legacy"), \
+             patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            ctx, out, err = _make_ctx(tmp_path, tty=True)
+            rc = cfg.run_config(ctx)
+        assert rc == 1
+        assert "vvread uninstall" in err.getvalue()
+
+    def test_user_setting_with_modern_hook_no_auto_create(self, tmp_path):
+        """--user-setting + settings なし + modern hook → 自動 create しない"""
+        with patch.object(cfg._hs, "get_vvread_hook_status", return_value="modern"), \
+             patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            ctx, out, err = _make_ctx(tmp_path, tty=True, user_setting=True)
+            rc = cfg.run_config(ctx)
+        assert rc == 1
+        # user-scope 向けメッセージを確認
+        assert "--user-setting --create" in err.getvalue()
+        # modern hook による自動作成をしていない
+        assert not (tmp_path / "vvread.settings.json").exists()
+
+    def test_user_setting_with_legacy_hook_no_migration_hint(self, tmp_path):
+        """--user-setting + settings なし + legacy hook → legacy 移行案内にならない"""
+        with patch.object(cfg._hs, "get_vvread_hook_status", return_value="legacy"), \
+             patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            ctx, out, err = _make_ctx(tmp_path, tty=True, user_setting=True)
+            rc = cfg.run_config(ctx)
+        assert rc == 1
+        assert "vvread uninstall" not in err.getvalue()
+        assert "--user-setting --create" in err.getvalue()
+
+    def test_modern_hook_auto_create_reaches_editor(self, tmp_path):
+        """modern hook + settings なし → auto-create 後に対話エディタに到達する
+        TTY ありの non-dry-run: auto-create → settings.json 作成 → 対話フロー開始
+        対話フローに到達した証拠: "設定ファイル:" が out に出力される
+        """
+        with patch.object(cfg._hs, "get_vvread_hook_status", return_value="modern"), \
+             patch.object(cfg._stg, "user_settings_path",
+                          return_value=tmp_path / "nonexistent.json"):
+            # 全フィールド Enter（変更なし）で対話フローを通過
+            input_text = "\n" * len(cfg.CONFIG_FIELDS)
+            ctx, out, err = _make_ctx(tmp_path, tty=True, input_text=input_text)
+            rc = cfg.run_config(ctx)
+        # auto-create されて settings.json が存在する
+        assert (tmp_path / "vvread.settings.json").exists()
+        # 対話フロー到達: "設定ファイル:" が出力される
+        assert "設定ファイル:" in out.getvalue()
+
+    def test_existing_settings_unchanged(self, tmp_path):
+        """settings あり → 既存挙動を維持（--set で非対話確認）"""
+        settings = tmp_path / "vvread.settings.json"
+        settings.write_text(json.dumps({"voicevox": {"speaker": 3}}), encoding="utf-8")
+        ctx, out, err = _make_ctx(
+            tmp_path, set_pairs=["voicevox.speaker=5"]
+        )
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        data = json.loads(settings.read_text(encoding="utf-8"))
+        assert data["voicevox"]["speaker"] == 5
