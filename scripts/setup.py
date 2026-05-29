@@ -79,6 +79,7 @@ class SetupContext:
     cwd: Path = field(default_factory=Path.cwd)
     home: Path = field(default_factory=Path.home)
     repo_root: Optional[Path] = None
+    json_mode: bool = False  # True のとき status サマリを stdout に出さない
     # I/O DI: テストで stdin / stdout / stderr を差し替える
     in_stream: Any = None
     out_stream: Any = None
@@ -161,6 +162,20 @@ def _normalize_engine_base(url: str) -> str:
     if u.endswith("/version"):
         u = u[: -len("/version")]
     return u
+
+
+def _in_git_repo(cwd: Optional[Path] = None) -> bool:
+    """cwd が git リポジトリ配下かどうかを確認する。"""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            cwd=str(cwd or Path.cwd()),
+            timeout=5,
+        )
+        return proc.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
 
 
 def _engine_reachable(url: str) -> Optional[Dict[str, Any]]:
@@ -323,6 +338,76 @@ def _check_e2k_installed(venv_python: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 現在状態サマリ（run_setup 冒頭で表示）
+# ---------------------------------------------------------------------------
+
+_SUMMARY_TIMEOUT_SEC = 1.0
+
+
+def _get_setup_status(ctx: SetupContext) -> Dict[str, Any]:
+    """現在の engine / e2k / hook 状態を読み取り専用でチェックする。
+    エラーは無視して状態を返す（run_setup 冒頭のサマリ用）。"""
+    url = ctx.engine_url or DEFAULT_ENGINE_URL
+    base = _normalize_engine_base(url)
+    v, _ = _http_get_impl(f"{base}/version", _SUMMARY_TIMEOUT_SEC)
+    engine_info: Optional[Dict[str, Any]] = (
+        {"version": v.strip().strip('"')} if v else None
+    )
+
+    project_dir = SCRIPT_DIR.parent
+    venv_python = project_dir / ".venv" / "bin" / "python"
+    e2k_installed = _check_e2k_installed(venv_python)
+
+    hook_scopes: Dict[str, str] = {}
+    for scope in _hi.SCOPES:
+        path = _hi.resolve_settings_path(scope, cwd=ctx.cwd, home=ctx.home)
+        if path is None:
+            hook_scopes[scope] = "not-registered"
+            continue
+        data, _ = _hi._read_settings(path)
+        if data is None:
+            hook_scopes[scope] = "not-registered"
+            continue
+        stops = (data.get("hooks") or {}).get("Stop") or []
+        found = any(
+            _hi.is_voiceclaude_hook(h) for h in stops if isinstance(h, dict)
+        )
+        hook_scopes[scope] = "registered" if found else "not-registered"
+
+    return {
+        "engine_url": url,
+        "engine_info": engine_info,
+        "e2k_installed": e2k_installed,
+        "hook_scopes": hook_scopes,
+    }
+
+
+def _print_setup_status(status: Dict[str, Any], stream: Any) -> None:
+    """現在の状態サマリを表示する。"""
+    stream.write("─" * 52 + "\n")
+
+    engine_info = status["engine_info"]
+    url = status["engine_url"]
+    if engine_info is not None:
+        ver = engine_info.get("version", "?")
+        stream.write(f"  engine  {url}  ✓ connected (v{ver})\n")
+    else:
+        stream.write(f"  engine  {url}  ✗ not reachable\n")
+
+    e2k_label = "✓ installed" if status["e2k_installed"] else "- not installed"
+    stream.write(f"  e2k     {e2k_label}\n")
+
+    hook_scopes = status["hook_scopes"]
+    parts = []
+    for s in _hi.SCOPES:
+        mark = "✓" if hook_scopes.get(s) == "registered" else "-"
+        parts.append(f"{s} {mark}")
+    stream.write(f"  hook    {' | '.join(parts)}\n")
+
+    stream.write("─" * 52 + "\n")
+
+
+# ---------------------------------------------------------------------------
 # step: e2k
 # ---------------------------------------------------------------------------
 
@@ -451,13 +536,24 @@ def step_hook(ctx: SetupContext) -> StepResult:
             message="hook step skipped (--skip-hook)",
         )
 
-    # scope の対話確認(--yes なら ctx.hook_scope を使う)
+    out = ctx.out_stream or sys.stdout
     scope = ctx.hook_scope
-    if not ctx.yes and ctx.hook_scope == _hi.DEFAULT_SCOPE:
+
+    # Git 配下チェック（U-105）: 対話モードでのみ適用。Git 外では user scope を推奨
+    if not ctx.yes and not _in_git_repo(ctx.cwd) and scope in ("project-local", "project"):
+        out.write(
+            "  ⚠  Git リポジトリ外で実行しています。\n"
+            "     project-local / project scope は .claude/ ディレクトリを必要とします。\n"
+            "     推奨 scope を user に変更します。\n"
+        )
+        scope = "user"
+
+    # scope の対話確認(--yes なら scope をそのまま使う)
+    if not ctx.yes and (ctx.hook_scope == _hi.DEFAULT_SCOPE or scope != ctx.hook_scope):
         ans = _prompt(
             ctx,
             f"Hook scope ({'/'.join(_hi.SCOPES)})",
-            _hi.DEFAULT_SCOPE,
+            scope,
         ).strip()
         if ans:
             scope = ans
@@ -515,6 +611,11 @@ def run_setup(ctx: SetupContext) -> List[StepResult]:
     pre = _require_tty_or_yes(ctx)
     if pre is not None:
         return [pre]
+
+    # 現在の状態サマリを表示（ctx.json_mode が有効なときは出力しない）
+    if not getattr(ctx, "json_mode", False):
+        out = ctx.out_stream or sys.stdout
+        _print_setup_status(_get_setup_status(ctx), out)
 
     results: List[StepResult] = []
     abort = False
@@ -637,6 +738,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         install_e2k=install_e2k_explicit,
         hook_scope=args.scope,
         repo_root=repo_root,
+        json_mode=args.json,
     )
 
     results = run_setup(ctx)

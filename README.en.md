@@ -108,10 +108,11 @@ docker run --rm -p 50021:50021 voicevox/voicevox_engine:cpu-latest
 vvread setup
 ```
 
-`vvread setup` will interactively ask:
+`vvread setup` first displays a status summary showing the current state of engine / e2k / hook.
+It then interactively confirms:
 - VOICEVOX Engine URL (default `http://127.0.0.1:50021`)
-- Speaker ID for synthesis
-- Whether to register the Claude Code Stop hook
+- Whether to install e2k (English-to-kana converter)
+- Whether to register the Claude Code Stop hook (with scope selection)
 
 ### 3. Test it
 

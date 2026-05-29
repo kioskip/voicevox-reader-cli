@@ -306,6 +306,32 @@ class TestStepHook:
         assert result.status == setup_mod.STATUS_OK
         assert (home / ".claude" / "settings.json").exists()
 
+    def test_git_check_recommends_user_scope_outside_git(self, tmp_path, monkeypatch):
+        """Git 外・対話モードで project-local デフォルト → user scope に変更して警告を出す"""
+        monkeypatch.setattr(setup_mod, "_in_git_repo", lambda cwd=None: False)
+        ctx, cwd, home, fake_repo = _make_ctx(
+            tmp_path,
+            yes=False,
+            # Enter を押してデフォルト scope をそのまま受け入れる
+            in_text="\n",
+        )
+        result = setup_mod.step_hook(ctx)
+        assert result.status == setup_mod.STATUS_OK
+        out = ctx.out_stream.getvalue()
+        assert "Git リポジトリ外" in out
+        assert "user" in out
+        # user scope のファイルに書き込まれること
+        assert (home / ".claude" / "settings.json").exists()
+
+    def test_git_check_not_applied_in_yes_mode(self, tmp_path, monkeypatch):
+        """--yes モードでは Git チェックを適用しない（project-local のまま）"""
+        monkeypatch.setattr(setup_mod, "_in_git_repo", lambda cwd=None: False)
+        ctx, cwd, home, fake_repo = _make_ctx(tmp_path, yes=True)
+        result = setup_mod.step_hook(ctx)
+        assert result.status == setup_mod.STATUS_OK
+        # user scope ではなく project-local に書き込まれること
+        assert (cwd / ".claude" / "settings.local.json").exists()
+
 
 # ---------------------------------------------------------------------------
 # run_setup: 連鎖実行 / ERROR 連鎖防止 / --skip-*

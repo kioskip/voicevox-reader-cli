@@ -66,6 +66,8 @@ vvread play morning.wav
 | `project` | `<cwd>/.claude/settings.json` | チームで共有したい場合 |
 | `user` | `~/.claude/settings.json` | 全プロジェクトで有効化 |
 
+> **ヒント**: Git リポジトリ外（ホームディレクトリなど）で対話実行した場合は、`user` scope が自動的に推奨されます。全プロジェクトで音声読み上げを有効にしたい場合に便利です。
+
 ```bash
 vvread install                        # 対話式（scope・speaker を選択）
 vvread install --yes                  # 非対話、project-local（デフォルト）
