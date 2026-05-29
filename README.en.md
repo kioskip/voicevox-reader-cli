@@ -165,7 +165,12 @@ Place `vvread.settings.json` in your project root, or use `vvread config` to edi
 
 ## 7. Claude Code integration
 
-### 7-1. Automatic setup
+### 7-1. Adding to another project
+
+> **Note**: If you ran `vvread setup`, hook registration was already completed during setup.
+> You do not need to run `vvread install` again for the same project.
+>
+> Use `vvread install` when you want to add the hook to a different project or to all projects (user scope).
 
 ```bash
 vvread install --scope user

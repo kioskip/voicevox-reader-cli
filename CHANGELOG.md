@@ -17,6 +17,23 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.2.6] - 2026-05-29
+
+### Added
+
+- `scripts/hook_status.py`: hook 登録状態の判定ロジックを `hook_install.py` から独立モジュールとして分離。`config.py` と `hook_install.py` の両方が参照し、import の向きを一方向に固定した (U-111)
+
+### Changed
+
+- `bin/vvread` / `scripts/setup.py` / `scripts/hook_install.py` / `doc/01-setup.md` / `README.md` / `README.ja.md` / `publish/README.md` / `publish/README.en.md`: `vvread setup`（初回セットアップ一括）と `vvread install`（別プロジェクトへの追加登録）の役割の違いをヘルプ・README・doc で明記した (U-111)
+
+### Fixed
+
+- `scripts/config.py`: `vvread config` で Ctrl+C 時に `KeyboardInterrupt` のトレースバックが出力される問題を修正。`__main__` で catch し「キャンセルしました。」を stderr 出力して exit 0 で終了する (U-109)
+- `scripts/config.py`: `vvread.settings.json` が存在しない場合に `vvread config` が即 FAIL する問題を修正。modern hook が登録済みなら project settings を自動作成するフローへ進む。legacy hook なら移行案内、hook 未登録なら `vvread setup` / `vvread install` / `--create` の 3 択を案内する (F-112)
+
+---
+
 ## [0.2.5] - 2026-05-28
 
 ### Added

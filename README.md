@@ -161,7 +161,12 @@ vvread doctor                  # ヘルスチェック
 
 ## 7. Claude Code との連携
 
-### 7-1. 自動セットアップ
+### 7-1. 別プロジェクトへの追加登録
+
+> **注意**: `vvread setup` を実施した環境では、セットアップ中に Claude Code hook の登録まで完了しています。
+> 同じプロジェクトで再度 `vvread install` を実行する必要はありません。
+>
+> 別のプロジェクトや全プロジェクト共通（user scope）に hook を追加したい場合は `vvread install` を使います。
 
 ```bash
 vvread install --scope user
