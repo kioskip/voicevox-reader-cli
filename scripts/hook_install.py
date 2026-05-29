@@ -75,6 +75,21 @@ HOOK_ASYNC_DEFAULT = True
 # resolve_settings_path は hook_status から import 済み。
 
 
+def _in_git_repo(cwd: Optional[Path] = None) -> bool:
+    """cwd が git リポジトリ配下かどうかを確認する。"""
+    import subprocess  # noqa: PLC0415
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            cwd=str(cwd or Path.cwd()),
+            timeout=5,
+        )
+        return proc.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def _resolve_scope_alias(scope: str) -> Tuple[str, Optional[str]]:
     """deprecated scope alias を解決する。
 
@@ -721,6 +736,18 @@ def interactive_install(
                 "project":       f"project        →  {cwd}/.claude/settings.json",
             }
             scope_labels = [_label_map[s] for s in available]
+
+            # Git 配下チェック（U-105）: Git 外では user scope を先頭に固定
+            if not _in_git_repo(cwd):
+                out.write(
+                    "\n⚠  Git リポジトリ外で実行しています。\n"
+                    "   project-local / project scope は .claude/ ディレクトリを必要とします。\n"
+                    "   user scope を推奨します。\n\n"
+                )
+                user_label = _label_map.get("user")
+                if user_label and user_label in scope_labels and scope_labels[0] != user_label:
+                    scope_labels = [user_label] + [l for l in scope_labels if l != user_label]
+
             chosen_label = _prompt_choice(
                 "登録先を選択してください:",
                 scope_labels,

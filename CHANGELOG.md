@@ -17,6 +17,19 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.2.7] - 2026-05-30
+
+### Added
+
+- `vvread setup`: 実行冒頭に engine / e2k / hook の現在状態サマリを表示するようになった。実行前に何が設定済みか一目で確認できる (U-112)
+- `vvread setup` / `vvread install`: Git リポジトリ外で対話実行した場合、`user` scope を推奨する警告と導線を追加した (U-105)
+
+### Changed
+
+- `doc/00-project-policy.md`: `install` コマンドを維持する理由（pre-commit / husky 慣習）を設計方針に明文化
+
+---
+
 ## [0.2.6] - 2026-05-29
 
 ### Added
