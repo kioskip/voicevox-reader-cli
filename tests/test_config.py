@@ -226,6 +226,21 @@ class TestPromptField:
         cfg._prompt_field("voicevox.speaker", "Speaker ID", int, 3, _DESC, ctx=ctx)
         assert "# テスト" in out.getvalue()
 
+    def test_n_uppercase_returns_clear(self, tmp_path):
+        ctx, out, _ = _make_ctx(tmp_path, input_text="N\n")
+        result = cfg._prompt_field("voicevox.speaker", "Speaker ID", int, 3, _DESC, ctx=ctx)
+        assert result is cfg._CLEAR
+
+    def test_n_lowercase_returns_clear(self, tmp_path):
+        ctx, out, _ = _make_ctx(tmp_path, input_text="n\n")
+        result = cfg._prompt_field("voicevox.speaker", "Speaker ID", int, 3, _DESC, ctx=ctx)
+        assert result is cfg._CLEAR
+
+    def test_prompt_hint_contains_clear(self, tmp_path):
+        ctx, out, _ = _make_ctx(tmp_path, input_text="\n")
+        cfg._prompt_field("voicevox.speaker", "Speaker ID", int, 3, _DESC, ctx=ctx)
+        assert "N=クリア" in out.getvalue()
+
 
 # ---------------------------------------------------------------------------
 # run_config
@@ -1013,3 +1028,113 @@ class TestF112HookStatusAutoCreate:
         assert rc == 0
         data = json.loads(settings.read_text(encoding="utf-8"))
         assert data["voicevox"]["speaker"] == 5
+
+
+# ---------------------------------------------------------------------------
+# B-119: N 入力でキーをクリアし JSONC コメントとして書き出す
+# ---------------------------------------------------------------------------
+
+
+class TestClearWithN:
+    """B-119: N 入力でキーを JSONC コメントとして書き出す機能のテスト。
+
+    CONFIG_FIELDS の順: engineUrl, speaker, volume, speed, pauseScale,
+                        pitch, intonation, inlineCodeLimit, chunkChars,
+                        chunkHardMax, maxChars, maxChunks
+    """
+
+    def _input_n_speaker(self) -> str:
+        """field1=Enter, field2(speaker)=N, 残り=Enter, 確認=Y。"""
+        n = len(cfg.CONFIG_FIELDS)
+        return "\nN\n" + "\n" * (n - 2) + "Y\n"
+
+    def test_n_input_writes_jsonc_comment(self, tmp_path):
+        """N 入力でファイルに // \"speaker\": 行が含まれる。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 3, "speed": 1.5}})
+        ctx, out, err = _make_ctx(tmp_path, input_text=self._input_n_speaker())
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        content = path.read_text(encoding="utf-8")
+        assert '// "speaker":' in content
+
+    def test_n_input_shown_in_summary(self, tmp_path):
+        """サマリに「クリア」が出力される。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 5}})
+        ctx, out, err = _make_ctx(tmp_path, input_text=self._input_n_speaker())
+        cfg.run_config(ctx)
+        assert "クリア" in out.getvalue()
+
+    def test_n_lowercase_also_clears(self, tmp_path):
+        """小文字 n でも同じ動作。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 3}})
+        n = len(cfg.CONFIG_FIELDS)
+        ctx, out, err = _make_ctx(tmp_path, input_text="\nn\n" + "\n" * (n - 2) + "Y\n")
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert '// "speaker":' in path.read_text(encoding="utf-8")
+
+    def test_cleared_key_loads_as_absent(self, tmp_path):
+        """JSONC ファイルを load_jsonc_file で読むとコメントキーは存在しない（JSONC valid 性）。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 3, "speed": 1.5}})
+        ctx, out, err = _make_ctx(tmp_path, input_text=self._input_n_speaker())
+        cfg.run_config(ctx)
+        data, err_msg = cfg._load_vvread_settings(path)
+        assert err_msg is None
+        assert "speaker" not in data.get("voicevox", {})
+        assert data["voicevox"]["speed"] == 1.5
+
+    def test_clear_preserves_other_keys(self, tmp_path):
+        """N でクリアしたキー以外の設定は変更されない。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 3, "speed": 1.8}})
+        ctx, out, err = _make_ctx(tmp_path, input_text=self._input_n_speaker())
+        cfg.run_config(ctx)
+        data, _ = cfg._load_vvread_settings(path)
+        assert data["voicevox"]["speed"] == 1.8
+
+    def test_all_keys_in_section_cleared(self, tmp_path):
+        """セクション内の全キーをクリアしても load_jsonc_file で読める（JSONC valid 性）。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 3}})
+        n = len(cfg.CONFIG_FIELDS)
+        ctx, out, err = _make_ctx(tmp_path, input_text="N\n" * n + "Y\n")
+        cfg.run_config(ctx)
+        data, err_msg = cfg._load_vvread_settings(path)
+        assert err_msg is None
+
+    def test_multiple_keys_cleared(self, tmp_path):
+        """複数キーを N でクリアしても保存後に load_jsonc_file で読める。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 3, "volume": 1.0, "speed": 1.5}})
+        n = len(cfg.CONFIG_FIELDS)
+        # engineUrl=Enter, speaker=N, volume=N, 残り=Enter, 確認=Y
+        ctx, out, err = _make_ctx(
+            tmp_path, input_text="\nN\nN\n" + "\n" * (n - 3) + "Y\n"
+        )
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        data, err_msg = cfg._load_vvread_settings(path)
+        assert err_msg is None
+        assert "speaker" not in data.get("voicevox", {})
+        assert "volume" not in data.get("voicevox", {})
+
+    def test_set_flag_does_not_preserve_jsonc_comment(self, tmp_path):
+        """--set による非対話書き込み後はコメント行が保持されない（制約の明示）。
+
+        NOTE: 対話式 config で作成した // コメント行は、--set 書き込み後に消える。
+        _save_vvread_settings() の docstring にも記載済み。
+        """
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"speaker": 3, "speed": 1.5}})
+        # 対話式で speaker をクリア
+        ctx, out, err = _make_ctx(tmp_path, input_text=self._input_n_speaker())
+        cfg.run_config(ctx)
+        assert '// "speaker":' in path.read_text(encoding="utf-8")
+        # --set で非対話書き込み → コメント行が消える
+        ctx2, out2, err2 = _make_ctx(tmp_path, set_pairs=["voicevox.speed=2.0"])
+        cfg.run_config(ctx2)
+        assert '// "speaker":' not in path.read_text(encoding="utf-8")

@@ -79,6 +79,8 @@ vvread config --json '{"voicevox.speakerId":3}' --user-setting  # ユーザー�
 vvread config --list                        # 有効な全設定を一覧表示
 ```
 
+> **ヒント**: `vvread config` の対話中にキーを `N` と入力すると、そのキーをコメントアウト（未設定）のまま書き出せます。user / default の値を引き継がせたい場合に便利です。
+
 `vvread config --list` の出力例:
 
 ```

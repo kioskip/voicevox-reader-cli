@@ -2,12 +2,12 @@
 # voice.sh - voiceClaude の発話制御 CLI
 #
 # サブコマンド:
-#   voice stop              現在再生中の音を即停止(将来の発話は維持)
-#   voice mute <duration>   一定時間ミュート(例: 30s, 5m, 2h)。期限後は自動復帰
-#   voice off               永続オフ(`voice on` まで)
-#   voice on                復帰
-#   voice status            現状表示
-#   voice clean             ${STATE_DIR} 内の orphan と ${CACHE_DIR} の wav を一括削除。具体的には以下:
+#   vvread stop              現在再生中の音を即停止(将来の発話は維持)
+#   vvread mute <duration>   一定時間ミュート(例: 30s, 5m, 2h)。期限後は自動復帰
+#   vvread off               永続オフ(`vvread on` まで)
+#   vvread on                復帰
+#   vvread status            現状表示
+#   vvread clean             ${STATE_DIR} 内の orphan と ${CACHE_DIR} の wav を一括削除。具体的には以下:
 #                             - 別セッションの voice_*.wav / .wav.query.json / .wav.query.json.tuned
 #                             - 旧 QUERY_PREFIX 形式の query_*.json / .tuned(S-001 以前の遺物)
 #                             - ${CACHE_DIR}/*.wav（定型フレーズ wav キャッシュ）
@@ -124,7 +124,7 @@ cmd_stop() {
 cmd_mute() {
   local arg="${1:-}"
   if [ -z "${arg}" ]; then
-    echo "Usage: voice mute <duration>  (例: 30s, 5m, 2h)" >&2
+    echo "Usage: vvread mute <duration>  (例: 30s, 5m, 2h)" >&2
     exit 1
   fi
   local sec
@@ -143,13 +143,13 @@ cmd_off() {
   touch "${DISABLED_FILE}"
   _stop_current
   log_info "off"
-  echo "disabled (call \`voice on\` to resume)"
+  echo "読み上げを無効にしました（再開するには \`vvread on\` を実行してください）"
 }
 
 cmd_on() {
   rm -f "${DISABLED_FILE}" "${MUTE_UNTIL_FILE}"
   log_info "on"
-  echo "enabled"
+  echo "読み上げを有効にしました"
 }
 
 cmd_clean() {
@@ -224,12 +224,12 @@ cmd_status() {
 
 usage() {
   cat >&2 <<EOF
-Usage: voice <command>
+Usage: vvread <command>
 
 Commands:
   stop              現在再生中の音を即停止(将来の発話は維持)
   mute <duration>   一定時間ミュート (例: 30s, 5m, 2h)
-  off               永続オフ(\`voice on\` まで)
+  off               永続オフ(\`vvread on\` まで)
   on                復帰
   status            現状表示
   clean             state ディレクトリの orphan(別セッションの voice_*)を掃除

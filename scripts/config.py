@@ -38,6 +38,10 @@ import settings as _stg
 # (dot_path, label, type, default, description)
 # description は入力プロンプトの前に表示する説明文（複数行可、"\n" 区切り）
 
+# N/n は vvread config の対話入力で「キー除去」操作として予約済み。
+# 将来 string 型フィールドで N を値として入力させたい場合は別 UI を検討すること。
+_CLEAR = object()
+
 CONFIG_FIELDS: List[Tuple[str, str, type, Any, str]] = [
     # --- 基本設定 ---
     (
@@ -60,7 +64,7 @@ CONFIG_FIELDS: List[Tuple[str, str, type, Any, str]] = [
             "# 話者ID\n"
             "VOICEVOX の speaker/style ID を指定します。\n"
             "例: 3=ずんだもん/ノーマル, 8=春日部つむぎ/ノーマル "
-            "（`vvread speakers` で一覧出来ます）"
+            "（一覧は `vvread speakers` で確認できます）"
         ),
     ),
     (
@@ -260,13 +264,13 @@ def _find_settings_file(
 def _load_vvread_settings(
     path: Path,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """vvread.settings.json を読み込む。
+    """vvread.settings.json を読み込む。JSONC コメント行を strip してから parse する。
 
     戻り値:
       (data, None)   成功（data は {} の可能性あり）
       (None, errmsg) 読み取りエラー / JSON 破損
     """
-    data, err = _jf.load_json_file(path)
+    data, err = _jf.load_jsonc_file(path)
     if err:
         return None, err
     if data is None:
@@ -305,13 +309,22 @@ def _save_vvread_settings(
     path: Path,
     data: Dict[str, Any],
     *,
+    commented_flat: Optional[Dict[str, Any]] = None,
     dry_run: bool = False,
 ) -> None:
-    """bak を作ってから atomic write する。"""
+    """bak を作ってから atomic write する。
+
+    commented_flat が指定された場合は JSONC 形式（// コメント行付き）で書き出す。
+    NOTE: --set / --json などの非対話書き込みは commented_flat を渡さないため
+    plain JSON で保存される。対話式 config で作成した // コメント行は非対話書き込み後に消える。
+    """
     if dry_run:
         return
     _jf.backup_file(path)
-    _jf.write_json_atomic(path, data)
+    if commented_flat:
+        _jf.write_jsonc_atomic(path, data, commented_flat)
+    else:
+        _jf.write_json_atomic(path, data)
 
 
 # ---------------------------------------------------------------------------
@@ -344,15 +357,18 @@ def _prompt_field(
 
     - 入力前に description を表示する
     - Enter のみ → 現在値を返す
+    - N / n → _CLEAR を返す（このキーをファイルから除去し cascade に委ねる）
     - 入力値は typ に型変換する
     - 型変換失敗 → エラーを表示して再入力
     """
     out = ctx.out_stream or sys.stdout
     out.write(f"\n{description}\n")
     while True:
-        raw = _prompt(ctx, f"{label} [現在: {current}]: ")
+        raw = _prompt(ctx, f"{label} [現在: {current} | Enter=維持, N=クリア]: ")
         if raw == "":
             return current
+        if raw.upper() == "N":
+            return _CLEAR
         try:
             if typ is int:
                 converted = int(raw)
@@ -652,10 +668,16 @@ def run_config(ctx: ConfigContext) -> int:
 
     # 各フィールドを対話編集
     new_flat: Dict[str, Any] = {}
+    commented_flat: Dict[str, Any] = {}  # N 入力キーの参考値（cascade 解決済み）
     for dot_path, label, typ, default, description in CONFIG_FIELDS:
         current = flat_current.get(dot_path, default)
         new_val = _prompt_field(dot_path, label, typ, current, description, ctx=ctx)
-        new_flat[dot_path] = new_val
+        if new_val is _CLEAR:
+            # 「クリア」= このファイルからキーを除去し JSONC コメントとして参考表示。
+            # current はカスケード解決済みの値であり、ファイル保存値とは限らない（参考値）。
+            commented_flat[dot_path] = current
+        else:
+            new_flat[dot_path] = new_val
 
     # 変更サマリ
     _field_defaults = {f[0]: f[3] for f in CONFIG_FIELDS}
@@ -664,6 +686,8 @@ def run_config(ctx: ConfigContext) -> int:
         for k, v in new_flat.items()
         if v != flat_current.get(k, _field_defaults[k])
     }
+    for dot_path, old_val in commented_flat.items():
+        changes[dot_path] = (old_val, _CLEAR)
 
     if not changes:
         out.write("\n変更なし。\n")
@@ -671,15 +695,20 @@ def run_config(ctx: ConfigContext) -> int:
 
     out.write("\n変更内容:\n")
     for k, (old, new) in changes.items():
-        out.write(f"  {k}: {old} → {new}\n")
+        if new is _CLEAR:
+            out.write(f"  {k}: {old} → (クリア — cascade に委ねる)\n")
+        else:
+            out.write(f"  {k}: {old} → {new}\n")
 
     # 保存確認
     if not _prompt_yes_no(ctx, f"\n{settings_path} に保存しますか？"):
         out.write("キャンセルしました。\n")
         return 0
 
-    # 既存の data（unknown keys 含む）に変更を上書きマージ
+    # 既存の data（unknown keys 含む）に変更を上書きマージ。クリアキーは除去する。
     merged_flat = flat_current.copy()
+    for dot_path in commented_flat:
+        merged_flat.pop(dot_path, None)
     merged_flat.update(new_flat)
     new_data = _unflatten(merged_flat)
 
@@ -688,7 +717,9 @@ def run_config(ctx: ConfigContext) -> int:
         return 0
 
     try:
-        _save_vvread_settings(settings_path, new_data)
+        _save_vvread_settings(
+            settings_path, new_data, commented_flat=commented_flat or None
+        )
     except OSError as e:
         err.write(f"ERROR: {settings_path}: cannot write: {e}\n")
         return 1

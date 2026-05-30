@@ -350,8 +350,8 @@ def _run_cli(*args, env=None, cwd=None):
 
 
 class TestCli:
-    def test_get_plain(self):
-        r = _run_cli("get", "voicevox.engineUrl")
+    def test_get_plain(self, tmp_path):
+        r = _run_cli("get", "voicevox.engineUrl", cwd=str(tmp_path))
         assert r.returncode == 0
         assert r.stdout.strip() == "http://127.0.0.1:50021"
 
@@ -363,22 +363,22 @@ class TestCli:
         assert payload["origin"] == "default"
         assert payload["detail"] is None
 
-    def test_get_env_overrides_default_via_cli(self):
+    def test_get_env_overrides_default_via_cli(self, tmp_path):
         r = _run_cli("get", "voicevox.speaker", "--with-origin",
-                     env={"VOICEVOX_SPEAKER": "8"})
+                     env={"VOICEVOX_SPEAKER": "8"}, cwd=str(tmp_path))
         assert r.returncode == 0
         payload = json.loads(r.stdout)
         assert payload["value"] == 8
         assert payload["origin"] == "env"
         assert payload["detail"] == "VOICEVOX_SPEAKER"
 
-    def test_get_unknown_key_exits_1(self):
-        r = _run_cli("get", "no.such.key")
+    def test_get_unknown_key_exits_1(self, tmp_path):
+        r = _run_cli("get", "no.such.key", cwd=str(tmp_path))
         assert r.returncode == 1
         assert "unknown key" in r.stderr
 
-    def test_list_plain(self):
-        r = _run_cli("list")
+    def test_list_plain(self, tmp_path):
+        r = _run_cli("list", cwd=str(tmp_path))
         assert r.returncode == 0
         # 各 SCHEMA キーが列挙される
         for key in settings_module.SCHEMA.keys():
@@ -399,9 +399,9 @@ class TestCli:
 
 
 class TestCliEnv:
-    def test_env_emits_all_schema_vars(self):
+    def test_env_emits_all_schema_vars(self, tmp_path):
         """env サブコマンドが SCHEMA の全 env_var を出力する"""
-        r = _run_cli("env")
+        r = _run_cli("env", cwd=str(tmp_path))
         assert r.returncode == 0
         for key, (default, env_var, _) in settings_module.SCHEMA.items():
             if env_var:
@@ -423,21 +423,21 @@ class TestCliEnv:
         assert r.returncode == 0
         assert "VOICEVOX_SPEAKER='99'" in r.stdout
 
-    def test_env_legacy_voicevox_engine_fallback(self):
+    def test_env_legacy_voicevox_engine_fallback(self, tmp_path):
         """VOICEVOX_ENGINE (legacy) が VOICEVOX_ENGINE_URL として出力される (S-008)"""
-        r = _run_cli("env", env={"VOICEVOX_ENGINE": "http://192.168.1.1:50021"})
+        r = _run_cli("env", env={"VOICEVOX_ENGINE": "http://192.168.1.1:50021"}, cwd=str(tmp_path))
         assert r.returncode == 0
         assert "VOICEVOX_ENGINE_URL='http://192.168.1.1:50021'" in r.stdout
 
-    def test_env_output_is_eval_safe(self):
+    def test_env_output_is_eval_safe(self, tmp_path):
         """shlex.quote で値がクォートされ eval できる"""
-        r = _run_cli("env", env={"VOICEVOX_ENGINE_URL": "http://127.0.0.1:50021"})
+        r = _run_cli("env", env={"VOICEVOX_ENGINE_URL": "http://127.0.0.1:50021"}, cwd=str(tmp_path))
         assert r.returncode == 0
         assert "VOICEVOX_ENGINE_URL='http://127.0.0.1:50021'" in r.stdout
 
-    def test_env_output_has_export_prefix(self):
+    def test_env_output_has_export_prefix(self, tmp_path):
         """env サブコマンドの全出力行が 'export ' で始まる(R-037)"""
-        r = _run_cli("env")
+        r = _run_cli("env", cwd=str(tmp_path))
         assert r.returncode == 0
         for line in r.stdout.strip().splitlines():
             assert line.startswith("export "), f"missing export prefix: {line!r}"

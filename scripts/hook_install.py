@@ -35,14 +35,14 @@ import json
 import os
 import shlex
 import sys
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Dict, List, Optional, Tuple
 
 import json_file as _jf
 from hook_status import is_voiceclaude_hook, resolve_settings_path
+from lib_git import in_git_repo as _in_git_repo
+from lib_http import http_get as _http_get
 from lib_prompt import (
     is_tty as _is_tty,
     prompt_choice as _prompt_choice,
@@ -73,21 +73,6 @@ HOOK_ASYNC_DEFAULT = True
 # ---------------------------------------------------------------------------
 
 # resolve_settings_path は hook_status から import 済み。
-
-
-def _in_git_repo(cwd: Optional[Path] = None) -> bool:
-    """cwd が git リポジトリ配下かどうかを確認する。"""
-    import subprocess  # noqa: PLC0415
-    try:
-        proc = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            cwd=str(cwd or Path.cwd()),
-            timeout=5,
-        )
-        return proc.returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
-        return False
 
 
 def _resolve_scope_alias(scope: str) -> Tuple[str, Optional[str]]:
@@ -175,6 +160,7 @@ class InstallResult:
     dry_run: bool = False
     hook_command: Optional[str] = None
     error: Optional[str] = None
+    scope: str = ""
 
 
 @dataclass
@@ -297,6 +283,7 @@ def install(
         settings_path=settings_path,
         hook_command=hook_command,
         dry_run=dry_run,
+        scope=scope,
     )
 
     data, err = _read_settings(settings_path)
@@ -473,8 +460,8 @@ def _emit_install(result: InstallResult) -> None:
     if result.dry_run:
         if result.skipped_already_present:
             print(
-                f"[dry-run] {result.settings_path}: "
-                f"vvread hook is already registered, no change needed"
+                f"[dry-run] Claude hook は既に有効です（{result.scope} scope）。"
+                f"追加登録は行いません。"
             )
         else:
             print(
@@ -483,10 +470,8 @@ def _emit_install(result: InstallResult) -> None:
             )
         return
     if result.skipped_already_present:
-        print(
-            f"{result.settings_path}: "
-            f"vvread hook is already registered, no change made"
-        )
+        print(f"Claude hook は既に有効です（{result.scope} scope）。")
+        print("追加登録は行いません。")
         print("✅ vvread install: no action needed (already registered)")
         return
     if result.changed:
@@ -542,14 +527,15 @@ def _fetch_speakers_for_install(
     失敗 / malformed → None（install は止めない）。
     """
     url = engine_url.rstrip("/") + "/speakers"
+    text, err = _http_get(url, timeout)
+    if text is None or err is not None:
+        return None
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
-            text = resp.read().decode("utf-8", errors="replace")
         data = json.loads(text)
-        if isinstance(data, list):
-            return data
-    except Exception:  # noqa: BLE001
-        pass
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(data, list):
+        return data
     return None
 
 

@@ -39,3 +39,62 @@ class TestPromptSpeakerId:
         """speaker_ids と speaker_options の長さ不一致で RuntimeError"""
         with pytest.raises(RuntimeError, match="長さ不一致"):
             lp.prompt_speaker_id("Speaker:", ["四国めたん"], [2, 3], current_id=2)
+
+
+class TestPromptYn:
+    def test_enter_returns_default_true(self):
+        """Enter のみ → default(True) を返す (U-114)"""
+        out = io.StringIO()
+        in_ = io.StringIO("\n")
+        assert lp.prompt_yn("OK?", default=True, in_stream=in_, out_stream=out) is True
+
+    def test_enter_returns_default_false(self):
+        """Enter のみ → default(False) を返す (U-114)"""
+        out = io.StringIO()
+        in_ = io.StringIO("\n")
+        assert lp.prompt_yn("OK?", default=False, in_stream=in_, out_stream=out) is False
+
+    def test_yes_input_returns_true(self):
+        out = io.StringIO()
+        in_ = io.StringIO("y\n")
+        assert lp.prompt_yn("OK?", default=False, in_stream=in_, out_stream=out) is True
+
+    def test_no_input_returns_false(self):
+        out = io.StringIO()
+        in_ = io.StringIO("n\n")
+        assert lp.prompt_yn("OK?", default=True, in_stream=in_, out_stream=out) is False
+
+
+class TestPromptChoice:
+    def test_number_selects_choice(self):
+        """番号入力でその選択肢を返す (U-113)"""
+        out = io.StringIO()
+        in_ = io.StringIO("2\n")
+        result = lp.prompt_choice(
+            "scope:", ["project-local", "project", "user"], "project-local",
+            in_stream=in_, out_stream=out,
+        )
+        assert result == "project"
+
+    def test_enter_returns_default(self):
+        """Enter のみ → default を返す (U-113)"""
+        out = io.StringIO()
+        in_ = io.StringIO("\n")
+        result = lp.prompt_choice(
+            "scope:", ["project-local", "project", "user"], "user",
+            in_stream=in_, out_stream=out,
+        )
+        assert result == "user"
+        # default 行に [default] マーカーが付くこと
+        assert "user" in out.getvalue()
+        assert "[default]" in out.getvalue()
+
+    def test_invalid_then_valid(self):
+        """範囲外 → 再 prompt → 有効な番号で確定 (U-113)"""
+        out = io.StringIO()
+        in_ = io.StringIO("9\n1\n")
+        result = lp.prompt_choice(
+            "scope:", ["project-local", "project", "user"], "user",
+            in_stream=in_, out_stream=out,
+        )
+        assert result == "project-local"
