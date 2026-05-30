@@ -39,7 +39,12 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 import dependencies as _deps  # noqa: E402
 import hook_install as _hi  # noqa: E402
+from lib_git import in_git_repo as _in_git_repo  # noqa: E402 (U-115)
 from lib_http import http_get as _http_get_impl  # noqa: E402 (R-101)
+from lib_prompt import (  # noqa: E402 (U-113 / U-114)
+    prompt_choice as _prompt_choice,
+    prompt_yn as _prompt_yn,
+)
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -115,20 +120,19 @@ def _prompt(ctx: SetupContext, question: str, default: str) -> str:
 
 
 def _prompt_yes_no(ctx: SetupContext, question: str, default: bool = False) -> bool:
+    """ctx.yes なら即 default、それ以外は lib_prompt.prompt_yn に委譲 (U-114)。
+
+    注意: lib_prompt.prompt_yn の既定は default=True だが、本ラッパーの既定は
+    default=False。default は必ず明示的に転送する(opt-out への反転を防ぐ)。
+    """
     if ctx.yes:
         return default
-    suffix = "[Y/n]" if default else "[y/N]"
-    out = ctx.out_stream or sys.stdout
-    in_ = ctx.in_stream or sys.stdin
-    out.write(f"{question} {suffix}: ")
-    out.flush()
-    line = in_.readline()
-    if not line:
-        return default
-    line = line.strip().lower()
-    if not line:
-        return default
-    return line in ("y", "yes", "1", "true")
+    return _prompt_yn(
+        question,
+        default=default,
+        in_stream=ctx.in_stream,
+        out_stream=ctx.out_stream,
+    )
 
 
 def _require_tty_or_yes(ctx: SetupContext) -> Optional[StepResult]:
@@ -162,20 +166,6 @@ def _normalize_engine_base(url: str) -> str:
     if u.endswith("/version"):
         u = u[: -len("/version")]
     return u
-
-
-def _in_git_repo(cwd: Optional[Path] = None) -> bool:
-    """cwd が git リポジトリ配下かどうかを確認する。"""
-    try:
-        proc = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            cwd=str(cwd or Path.cwd()),
-            timeout=5,
-        )
-        return proc.returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
-        return False
 
 
 def _engine_reachable(url: str) -> Optional[Dict[str, Any]]:
@@ -402,7 +392,7 @@ def _print_setup_status(status: Dict[str, Any], stream: Any) -> None:
     for s in _hi.SCOPES:
         mark = "✓" if hook_scopes.get(s) == "registered" else "-"
         parts.append(f"{s} {mark}")
-    stream.write(f"  hook    {' | '.join(parts)}\n")
+    stream.write(f"  hook    {' | '.join(parts)}  （- = 未登録）\n")
 
     stream.write("─" * 52 + "\n")
 
@@ -548,15 +538,19 @@ def step_hook(ctx: SetupContext) -> StepResult:
         )
         scope = "user"
 
-    # scope の対話確認(--yes なら scope をそのまま使う)
+    # scope の対話確認(--yes なら scope をそのまま使う) (U-113)
+    # prompt_choice の番号メニューに統一。default に渡す `scope` は Git 外補正後
+    # の値で、常に SCOPES のメンバーであること(prompt_choice の [default] 表示は
+    # 文字列一致のため)。空入力は default を返すので無条件代入で良い。
     if not ctx.yes and (ctx.hook_scope == _hi.DEFAULT_SCOPE or scope != ctx.hook_scope):
-        ans = _prompt(
-            ctx,
-            f"Hook scope ({'/'.join(_hi.SCOPES)})",
+        scope = _prompt_choice(
+            "Hook scope を選択してください:",
+            list(_hi.SCOPES),
             scope,
-        ).strip()
-        if ans:
-            scope = ans
+            in_stream=ctx.in_stream,
+            out_stream=ctx.out_stream,
+        )
+    # prompt_choice は SCOPES 内の値しか返さないが、防御的にチェックを残す
     if scope not in _hi.SCOPES:
         return StepResult(
             step="hook", status=STATUS_ERROR,

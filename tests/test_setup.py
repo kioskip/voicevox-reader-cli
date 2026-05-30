@@ -306,6 +306,23 @@ class TestStepHook:
         assert result.status == setup_mod.STATUS_OK
         assert (home / ".claude" / "settings.json").exists()
 
+    def test_interactive_scope_choice_by_number(self, tmp_path, monkeypatch):
+        """対話で番号入力 (U-113): SCOPES の 2 番目 'project' を選ぶと
+        project scope の settings.json が書かれる。"""
+        # Git 内扱いにして user 補正を抑止し、純粋に番号選択経路を検証
+        monkeypatch.setattr(setup_mod, "_in_git_repo", lambda cwd=None: True)
+        ctx, cwd, home, fake_repo = _make_ctx(
+            tmp_path,
+            yes=False,
+            in_text="2\n",  # SCOPES=("project-local","project","user") の 2 番目
+        )
+        result = setup_mod.step_hook(ctx)
+        assert result.status == setup_mod.STATUS_OK
+        out = ctx.out_stream.getvalue()
+        assert "Hook scope を選択してください" in out
+        # project scope → cwd/.claude/settings.json
+        assert (cwd / ".claude" / "settings.json").exists()
+
     def test_git_check_recommends_user_scope_outside_git(self, tmp_path, monkeypatch):
         """Git 外・対話モードで project-local デフォルト → user scope に変更して警告を出す"""
         monkeypatch.setattr(setup_mod, "_in_git_repo", lambda cwd=None: False)

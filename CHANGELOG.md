@@ -17,7 +17,27 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.2.8] - 2026-05-31
+
+### Added
+
+- `vvread config`: 対話中に `N` を入力するとそのキーを JSONC コメントとして書き出すようになった。カスケード上「未設定」扱いとなり user/default 設定に委ねられる (B-119)
+
+### Changed
+
+- `vvread setup`: scope 選択 UI を `vvread install` と同じ番号メニュー方式に統一した (U-113)
+- `vvread setup`: 対話 yes/no プロンプトを `lib_prompt.prompt_yn` に統一した (U-114)
+- `scripts/lib_git.py`: `_in_git_repo()` を独立モジュールとして切り出し、`setup.py` / `hook_install.py` から import するよう変更した (U-115)
+- `scripts/hook_install.py`: Engine 疎通確認を `lib_http.http_get` に一本化し、`urllib` 直接依存を削除した (U-116)
+
+### Fixed
+
+- `scripts/voice.sh`: ヘッダーコメント・usage メッセージに残存していた旧 CLI 名 `voice` を全 6 箇所 `vvread` に修正した。`vvread on` / `vvread off` の出力メッセージを日本語化した (F-111)
+
+---
+
 ## [0.2.7] - 2026-05-30
+
 
 ### Added
 

@@ -241,6 +241,7 @@ class TestInstallDoubleRegister:
         assert r2.error is None
         assert r2.changed is False
         assert r2.skipped_already_present is True
+        assert r2.scope == "project-local"
         # ファイル内の hook entry は 1 つのまま
         data = _read_settings(r2.settings_path)
         flat_hooks = []
@@ -250,6 +251,15 @@ class TestInstallDoubleRegister:
             1 for h in flat_hooks if hi.is_voiceclaude_hook(h.get("command", ""))
         )
         assert vc_count == 1
+
+    def test_scope_stored_in_result(self, tmp_path):
+        """scope が InstallResult に記録される。"""
+        cwd, home = _make_dirs(tmp_path)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        for scope in ("user", "project", "project-local"):
+            result = hi.install(scope=scope, cwd=cwd, home=home, repo_root=repo)
+            assert result.scope == scope
 
 
 class TestInstallDryRun:

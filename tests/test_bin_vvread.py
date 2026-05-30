@@ -135,7 +135,7 @@ class TestVoiceControlDispatch:
     def test_on_dispatches_to_voice_sh(self, tmp_path):
         r = run_vvread("on", env_extra=_path_env(tmp_path))
         assert r.returncode == 0, f"stderr={r.stderr}"
-        assert "enabled" in r.stdout
+        assert "読み上げを有効にしました" in r.stdout
 
     def test_off_then_on_round_trip(self, tmp_path):
         env = _path_env(tmp_path)
