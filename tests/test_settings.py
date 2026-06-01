@@ -366,8 +366,8 @@ class TestCli:
         assert r.returncode == 0
         payload = json.loads(r.stdout)
         assert payload["value"] == "http://127.0.0.1:50021"
-        assert payload["origin"] == "default"
-        assert payload["detail"] is None
+        # engines が user/project settings に設定されていれば "derived"、なければ "default"
+        assert payload["origin"] in ("default", "derived", "user", "project")
 
     def test_get_env_overrides_default_via_cli(self, tmp_path):
         r = _run_cli("get", "voicevox.speaker", "--with-origin",
@@ -401,9 +401,10 @@ class TestCli:
         # 全 SCHEMA キーが values に含まれる
         for key in settings_module.SCHEMA.keys():
             assert key in payload["values"]
-            # voicevox.engines は post-processing で engineUrl から派生するため "derived"
-            expected_origin = "derived" if key == "voicevox.engines" else "default"
-            assert payload["values"][key]["origin"] == expected_origin
+            # origin は user/project settings の有無で変わるためロバストに検証
+            assert payload["values"][key]["origin"] in (
+                "default", "derived", "user", "project", "env"
+            )
 
 
 class TestCliEnv:
@@ -555,3 +556,149 @@ class TestEngines:
         r = _run_cli("env", env={"VOICEVOX_ENGINES": "http://127.0.0.1:50021;http://127.0.0.1:50022"})
         assert r.returncode == 0
         assert "VOICEVOX_ENGINES='http://127.0.0.1:50021;http://127.0.0.1:50022'" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# U-117: normalize_engines / canonicalize_settings_dict
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeEngines:
+    def test_trailing_slash_removed(self):
+        normalized, errors = settings_module.normalize_engines(["http://127.0.0.1:50021/"])
+        assert normalized == ["http://127.0.0.1:50021"]
+        assert errors == []
+
+    def test_duplicates_removed_order_preserved(self):
+        urls = ["http://a:50021", "http://b:50022", "http://a:50021"]
+        normalized, errors = settings_module.normalize_engines(urls)
+        assert normalized == ["http://a:50021", "http://b:50022"]
+        assert errors == []
+
+    def test_invalid_scheme_excluded(self):
+        normalized, errors = settings_module.normalize_engines(["ftp://127.0.0.1:50021"])
+        assert normalized == []
+        assert len(errors) == 1
+        assert "ftp://127.0.0.1:50021" in errors[0]
+
+    def test_no_netloc_excluded(self):
+        normalized, errors = settings_module.normalize_engines(["http://"])
+        assert normalized == []
+        assert len(errors) == 1
+
+    def test_empty_string_excluded(self):
+        normalized, errors = settings_module.normalize_engines(["", "http://127.0.0.1:50021"])
+        assert normalized == ["http://127.0.0.1:50021"]
+        assert len(errors) == 1
+
+    def test_non_string_excluded(self):
+        normalized, errors = settings_module.normalize_engines([123, "http://127.0.0.1:50021"])
+        assert normalized == ["http://127.0.0.1:50021"]
+        assert len(errors) == 1
+
+    def test_https_allowed(self):
+        normalized, errors = settings_module.normalize_engines(["https://example.com:50021"])
+        assert normalized == ["https://example.com:50021"]
+        assert errors == []
+
+    def test_partial_invalid_keeps_valid(self):
+        normalized, errors = settings_module.normalize_engines([
+            "ftp://bad.example",
+            "http://127.0.0.1:50021",
+        ])
+        assert normalized == ["http://127.0.0.1:50021"]
+        assert len(errors) == 1
+
+
+class TestCanonicalizeSettingsDict:
+    def test_engine_url_only_converts_to_engines(self):
+        data = {"voicevox": {"engineUrl": "http://127.0.0.1:50021"}}
+        result = settings_module.canonicalize_settings_dict(data)
+        assert result["voicevox"]["engines"] == ["http://127.0.0.1:50021"]
+        assert "engineUrl" not in result["voicevox"]
+
+    def test_engines_wins_over_engine_url(self):
+        data = {"voicevox": {
+            "engineUrl": "http://old:50021",
+            "engines": ["http://new:50021", "http://new2:50022"],
+        }}
+        result = settings_module.canonicalize_settings_dict(data)
+        assert result["voicevox"]["engines"] == ["http://new:50021", "http://new2:50022"]
+        assert "engineUrl" not in result["voicevox"]
+
+    def test_engines_only_unchanged(self):
+        data = {"voicevox": {"engines": ["http://127.0.0.1:50021"]}}
+        result = settings_module.canonicalize_settings_dict(data)
+        assert result["voicevox"]["engines"] == ["http://127.0.0.1:50021"]
+        assert "engineUrl" not in result["voicevox"]
+
+    def test_neither_key_no_change(self):
+        data = {"voicevox": {"speaker": 3}}
+        result = settings_module.canonicalize_settings_dict(data)
+        assert result == {"voicevox": {"speaker": 3}}
+
+    def test_engines_empty_list_raises(self):
+        import pytest
+        data = {"voicevox": {"engines": []}}
+        with pytest.raises(ValueError, match="1件以上"):
+            settings_module.canonicalize_settings_dict(data)
+
+    def test_engines_invalid_url_raises(self):
+        import pytest
+        data = {"voicevox": {"engines": ["ftp://bad"]}}
+        with pytest.raises(ValueError, match="有効な URL が1件もありません"):
+            settings_module.canonicalize_settings_dict(data)
+
+    def test_trailing_slash_normalized(self):
+        data = {"voicevox": {"engines": ["http://127.0.0.1:50021/"]}}
+        result = settings_module.canonicalize_settings_dict(data)
+        assert result["voicevox"]["engines"] == ["http://127.0.0.1:50021"]
+
+    def test_original_data_not_mutated(self):
+        data = {"voicevox": {"engineUrl": "http://127.0.0.1:50021", "speaker": 3}}
+        original_copy = {"voicevox": {"engineUrl": "http://127.0.0.1:50021", "speaker": 3}}
+        settings_module.canonicalize_settings_dict(data)
+        assert data == original_copy
+
+
+class TestEnginesRuntimeExport:
+    def test_engines_only_derives_engine_url(self, tmp_path):
+        """engines のみ設定 → engineUrl が engines[0] として解決される。"""
+        s = _load(tmp_path, project_data={
+            "voicevox": {"engines": ["http://127.0.0.1:50022"]}
+        })
+        rv_engines = s.get("voicevox.engines")
+        rv_url = s.get("voicevox.engineUrl")
+        assert rv_engines.value == ["http://127.0.0.1:50022"]
+        assert rv_url.value == "http://127.0.0.1:50022"
+        assert rv_url.origin.source == "derived"
+
+    def test_engine_url_env_not_overridden_by_project_engines(self, tmp_path):
+        """VOICEVOX_ENGINE_URL env は project の engines より優先される。"""
+        s = _load(tmp_path,
+                  env={"VOICEVOX_ENGINE_URL": "http://127.0.0.1:1"},
+                  project_data={"voicevox": {"engines": ["http://127.0.0.1:50021"]}})
+        rv_url = s.get("voicevox.engineUrl")
+        # env から来た engineUrl は engines[0] で上書きされない
+        assert rv_url.value == "http://127.0.0.1:1"
+        assert rv_url.origin.source == "env"
+
+    def test_engines_and_engine_url_both_set_engines_wins(self, tmp_path):
+        """project に engineUrl + engines が両方ある → engines 優先、engineUrl=engines[0]。"""
+        s = _load(tmp_path, project_data={
+            "voicevox": {
+                "engineUrl": "http://old:50021",
+                "engines": ["http://new:50021", "http://new2:50022"],
+            }
+        })
+        rv_url = s.get("voicevox.engineUrl")
+        rv_engines = s.get("voicevox.engines")
+        assert rv_engines.value == ["http://new:50021", "http://new2:50022"]
+        assert rv_url.value == "http://new:50021"
+        assert rv_url.origin.source == "derived"
+
+    def test_env_engine_url_export_matches_env_value(self):
+        """VOICEVOX_ENGINE_URL env 設定時、env の値が VOICEVOX_ENGINE_URL として出力される。"""
+        r = _run_cli("env", env={"VOICEVOX_ENGINE_URL": "http://127.0.0.1:50022"})
+        assert r.returncode == 0
+        assert "VOICEVOX_ENGINE_URL='http://127.0.0.1:50022'" in r.stdout

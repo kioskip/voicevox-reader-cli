@@ -10,6 +10,7 @@
 |---|---|
 | `vvread <text> [--speaker N]` | テキストを直接読み上げ |
 | `vvread file <path> [--speaker N]` | ファイルの内容を読み上げ |
+| `vvread url <url> [--speaker N]` | WebページのURLを渡して本文を読み上げ |
 | `cat file \| vvread [--speaker N]` | stdin を読み上げ（パイプ入力のみ対応） |
 | `vvread say <text> [--speaker N]` | テキストを合成して再生（互換形式） |
 | `vvread synth <text> --output FILE [--speaker N]` | 合成のみ。wav を FILE に書き出す（再生しない） |
@@ -21,6 +22,7 @@
 ```bash
 vvread "ビルドが完了しました"
 vvread file /tmp/summary.txt
+vvread url https://example.com
 cat build.log | vvread
 vvread synth "おはようございます" --output morning.wav --speaker 1
 vvread play morning.wav
@@ -85,6 +87,7 @@ vvread config --list                        # 有効な全設定を一覧表示
 
 ```
 voicevox.engineUrl	http://127.0.0.1:50021
+voicevox.engines	http://127.0.0.1:50021
 voicevox.speaker	3
 voicevox.speed	1.5
 voicevox.maxChunks	0

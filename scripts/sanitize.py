@@ -8,6 +8,7 @@ sanitize.py - Claude の応答テキストを読み上げ用に整形する
 kana_dict.py の EXTENSION_KANA / WORD_KANA に登録する。
 """
 
+import html as _html
 import os
 import re
 import sys
@@ -351,6 +352,33 @@ def transform_dict_words(text: str) -> str:
     return _WORD_KANA_PATTERN.sub(lambda m: WORD_KANA.get(m.group(0).lower(), m.group(0)), text)
 
 
+_RUBY_RE = re.compile(r"<ruby\b[^>]*>(.*?)</ruby\s*>", re.DOTALL | re.IGNORECASE)
+_RT_RE = re.compile(r"<rt\b[^>]*>(.*?)</rt\s*>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_html_tags_shallow(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", text)
+
+
+def expand_ruby(text: str) -> str:
+    """HTML ルビ要素を <rt> の読みに展開する。
+
+    <ruby>漢字<rt>かんじ</rt></ruby>  →  かんじ
+    複数 <rt>: 各読みを結合。<rp> / <rb> / <rt> 内タグは除去。
+    HTML entity は unescape する（&amp; → &）。
+    <rt> がない場合は inner のタグを除去して返す（後段 remove_html_tags に委ねる）。
+    スコープ: well-formed な ruby のみ。閉じタグ欠落等は対象外。
+    """
+    def _replace(m: re.Match) -> str:
+        inner = m.group(1)
+        readings = [_html.unescape(_strip_html_tags_shallow(r)) for r in _RT_RE.findall(inner)]
+        if readings:
+            return "".join(readings)
+        return _html.unescape(_strip_html_tags_shallow(inner))
+
+    return _RUBY_RE.sub(_replace, text)
+
+
 def remove_html_tags(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text)
 
@@ -656,6 +684,7 @@ PIPELINE: List[Callable[[str], str]] = [
     # 地の文の英字パターンを辞書/拡張子経由でカナ化。順序は重要:
     # ファイル名 (CLAUDE.md) を先に丸ごと消費してから、残った裸の単語 (Claude) を辞書置換
     transform_filenames,
+    expand_ruby,
     transform_dict_words,
     remove_html_tags,
     strip_markdown_links,
@@ -814,4 +843,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)

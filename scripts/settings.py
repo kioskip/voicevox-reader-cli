@@ -28,6 +28,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import platform
@@ -35,6 +36,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from constants import (
     CHUNK_CHARS_DEFAULT,
@@ -207,29 +209,87 @@ def _read_settings_file(
     return data, None
 
 
+def normalize_engines(engines: list) -> Tuple[List[str], List[str]]:
+    """engines 配列を正規化する。(normalized, errors) を返す。
+
+    - 非文字列・空文字列を除外
+    - http:// または https:// で始まり netloc が必要
+    - trailing slash 除去
+    - 順序を維持しつつ重複 URL を除去
+    """
+    seen: set = set()
+    result: List[str] = []
+    errors: List[str] = []
+    for item in engines:
+        if not isinstance(item, str) or not item.strip():
+            errors.append(f"invalid entry {item!r} excluded")
+            continue
+        url = item.strip().rstrip("/")
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            errors.append(
+                f"invalid URL {url!r} excluded (scheme must be http/https, netloc required)"
+            )
+            continue
+        if url not in seen:
+            seen.add(url)
+            result.append(url)
+    return result, errors
+
+
 def _validate_engines(
     engines: list,
     parse_errors: List[Tuple[str, str]],
     source: str,
 ) -> list:
-    """engines 配列を検証・正規化する。
+    """後方互換ラッパー。normalize_engines() を呼び出す。"""
+    normalized, errors = normalize_engines(engines)
+    for e in errors:
+        parse_errors.append((source, f"voicevox.engines: {e}"))
+    return normalized
 
-    - 非文字列・空文字列を除外（除外発生時は parse_errors に警告を積む）
-    - trailing slash 除去
-    - 順序を維持しつつ重複 URL を除去
+
+def canonicalize_settings_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+    """settings dict を保存前に正規化する。全 writer が呼ぶ。
+
+    - voicevox.engineUrl → voicevox.engines に統一（保存時に engineUrl を除去）
+    - キー不在と engines=[] を区別: engines=[] は ValueError
+    - voicevox セクション以外は変更しない
     """
-    seen: set = set()
-    result = []
-    for item in engines:
-        if not isinstance(item, str) or not item.strip():
-            parse_errors.append(
-                (source, f"voicevox.engines: invalid entry {item!r} excluded")
+    result = copy.deepcopy(data)
+    vv = result.get("voicevox")
+    if not isinstance(vv, dict):
+        return result
+
+    has_engines = "engines" in vv
+    has_engine_url = "engineUrl" in vv
+    engines_val = vv.get("engines")
+    engine_url_val = vv.get("engineUrl", "")
+
+    if has_engines:
+        if not isinstance(engines_val, list):
+            raise ValueError(
+                f"voicevox.engines must be a list, got {type(engines_val).__name__}"
             )
-            continue
-        url = item.strip().rstrip("/")
-        if url not in seen:
-            seen.add(url)
-            result.append(url)
+        if len(engines_val) == 0:
+            raise ValueError("voicevox.engines: 有効な URL を1件以上指定してください")
+        # engines 優先: engineUrl を削除
+        vv.pop("engineUrl", None)
+    elif has_engine_url:
+        # engineUrl のみ存在: engines に変換して engineUrl を削除
+        url = engine_url_val.rstrip("/") if isinstance(engine_url_val, str) else ""
+        vv["engines"] = [url]
+        vv.pop("engineUrl", None)
+    # 両方なし: 何もしない → return
+
+    if "engines" in vv:
+        normalized, errors = normalize_engines(vv["engines"])
+        if not normalized:
+            raise ValueError(
+                f"voicevox.engines: 有効な URL が1件もありません ({errors})"
+            )
+        vv["engines"] = normalized
+
     return result
 
 
@@ -411,22 +471,30 @@ def load(
         settings.values[key] = resolved
 
     # voicevox.engines の post-processing:
-    # 未設定・空・バリデーション後空 → voicevox.engineUrl から 1 要素派生
+    # - engines が有効 → engineUrl を engines[0] で上書き（origin に関わらず常に）
+    # - engines が未設定・空 → voicevox.engineUrl から 1 要素派生
     engines_rv = settings.values.get("voicevox.engines")
     raw_engines = engines_rv.value if engines_rv else None
     if raw_engines:
-        validated = _validate_engines(
-            raw_engines,
-            settings.parse_errors,
-            engines_rv.origin.detail or "",
-        )
+        validated, errs = normalize_engines(raw_engines)
+        for e in errs:
+            settings.parse_errors.append(
+                (engines_rv.origin.detail or "", f"voicevox.engines: {e}")  # type: ignore[union-attr]
+            )
     else:
-        validated = None
+        validated = []
 
     if validated:
         settings.values["voicevox.engines"] = ResolvedValue(
             validated, engines_rv.origin  # type: ignore[union-attr]
         )
+        # engines が有効で、かつ engineUrl が env から解決されていない場合のみ
+        # engines[0] で上書きする。env からの VOICEVOX_ENGINE_URL は最高優先で維持する。
+        engine_url_rv = settings.values["voicevox.engineUrl"]
+        if engine_url_rv.origin.source != "env":
+            settings.values["voicevox.engineUrl"] = ResolvedValue(
+                validated[0], Origin("derived", "voicevox.engines")
+            )
     else:
         engine_url = settings.values["voicevox.engineUrl"].value
         settings.values["voicevox.engines"] = ResolvedValue(

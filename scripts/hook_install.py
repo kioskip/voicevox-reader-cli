@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import IO, Any, Dict, List, Optional, Tuple
 
 import json_file as _jf
+import settings as _stg
 from hook_status import is_voiceclaude_hook, resolve_settings_path
 from lib_git import in_git_repo as _in_git_repo
 from lib_http import http_get as _http_get
@@ -571,6 +572,11 @@ def _write_vvread_settings_speaker(
         data["voicevox"] = {}
         voicevox = data["voicevox"]
     voicevox["speaker"] = speaker_id
+    # 保存時に engineUrl → engines への canonicalize を通す（legacy キーが残っていれば移行）
+    try:
+        data = _stg.canonicalize_settings_dict(data)
+    except ValueError:
+        pass  # engines=[] などの破損設定は canonicalize をスキップして speaker だけ書く
     _jf.backup_file(settings_path)
     _jf.write_json_atomic(settings_path, data)
 

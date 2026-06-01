@@ -45,14 +45,15 @@ _CLEAR = object()
 CONFIG_FIELDS: List[Tuple[str, str, type, Any, str]] = [
     # --- 基本設定 ---
     (
-        "voicevox.engineUrl",
-        "VOICEVOX Engine URL",
-        str,
-        "http://127.0.0.1:50021",
+        "voicevox.engines",
+        "VOICEVOX Engine URLs",
+        list,
+        ["http://127.0.0.1:50021"],
         (
-            "# VOICEVOX Engine URL\n"
-            "VOICEVOX Engine の接続先URLです。\n"
-            "通常は http://127.0.0.1:50021 のままで問題ありません。"
+            "# VOICEVOX Engine URLs（カンマ区切りで複数指定可）\n"
+            "VOICEVOX Engine の接続先 URL です。\n"
+            "例: http://127.0.0.1:50021\n"
+            "複数エンジン: http://127.0.0.1:50021, http://127.0.0.1:50022"
         ),
     ),
     (
@@ -363,14 +364,29 @@ def _prompt_field(
     """
     out = ctx.out_stream or sys.stdout
     out.write(f"\n{description}\n")
+    # list 型は current をカンマ結合で表示する
+    current_display = ", ".join(current) if isinstance(current, list) else current
     while True:
-        raw = _prompt(ctx, f"{label} [現在: {current} | Enter=維持, N=クリア]: ")
+        raw = _prompt(ctx, f"{label} [現在: {current_display} | Enter=維持, N=クリア]: ")
         if raw == "":
-            return current
+            return list(current) if isinstance(current, list) else current
         if raw.upper() == "N":
             return _CLEAR
         try:
-            if typ is int:
+            if typ is list:
+                items = [u.strip().rstrip("/") for u in raw.split(",") if u.strip()]
+                normalized, errors = _stg.normalize_engines(items)
+                if errors:
+                    out.write(f"  無効な URL:\n")
+                    for e in errors:
+                        out.write(f"    {e}\n")
+                    out.write("  http:// または https:// で始まる URL を入力してください。\n")
+                    continue
+                if not normalized:
+                    out.write("  URL を1つ以上入力してください。\n")
+                    continue
+                return normalized
+            elif typ is int:
                 converted = int(raw)
             elif typ is float:
                 converted = float(raw)
@@ -409,6 +425,12 @@ def _coerce_str_value(key: str, raw: str) -> Any:
     """--set の値文字列を SCHEMA の型に変換する。unknown key は str として保存。"""
     if not raw:
         raise ValueError(f"値が空です (key: {key!r})")
+    if key == "voicevox.engines":
+        raise ValueError(
+            "voicevox.engines は --set では設定できません。\n"
+            "  例: vvread config --json "
+            "'{\"voicevox\":{\"engines\":[\"http://127.0.0.1:50021\"]}}'"
+        )
     if key not in _stg.SCHEMA:
         return raw
     _, _, typ = _stg.SCHEMA[key]
@@ -529,7 +551,12 @@ def run_config(ctx: ConfigContext) -> int:
         settings = _stg.load(ctx.cwd)
         for key in _stg.SCHEMA:
             rv = settings.get(key)
-            val = rv.value if rv else ""
+            if rv is None:
+                val: Any = ""
+            elif isinstance(rv.value, list):
+                val = ", ".join(str(v) for v in rv.value)
+            else:
+                val = rv.value
             out.write(f"{key}\t{val}\n")
         return 0
 
@@ -568,7 +595,12 @@ def run_config(ctx: ConfigContext) -> int:
                                was_missing=was_missing)
             return 0
 
-        new_data = _unflatten(merged_flat)
+        try:
+            new_data = _stg.canonicalize_settings_dict(_unflatten(merged_flat))
+        except ValueError as e:
+            err.write(f"ERROR: {e}\n")
+            return 1
+
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             _save_vvread_settings(settings_path, new_data)
@@ -666,11 +698,18 @@ def run_config(ctx: ConfigContext) -> int:
     # 現在の flat dict を作成（unknown keys も保持）
     flat_current = _flatten(data)
 
+    # 旧 engineUrl のみのファイルを engines プロンプトに正しく反映する:
+    # flat_current に engines がなく engineUrl がある場合、engines の current として使う
+    if "voicevox.engines" not in flat_current and "voicevox.engineUrl" in flat_current:
+        flat_current["voicevox.engines"] = [
+            flat_current["voicevox.engineUrl"].rstrip("/")
+        ]
+
     # 各フィールドを対話編集
     new_flat: Dict[str, Any] = {}
     commented_flat: Dict[str, Any] = {}  # N 入力キーの参考値（cascade 解決済み）
     for dot_path, label, typ, default, description in CONFIG_FIELDS:
-        current = flat_current.get(dot_path, default)
+        current = flat_current.get(dot_path, list(default) if isinstance(default, list) else default)
         new_val = _prompt_field(dot_path, label, typ, current, description, ctx=ctx)
         if new_val is _CLEAR:
             # 「クリア」= このファイルからキーを除去し JSONC コメントとして参考表示。
@@ -689,7 +728,11 @@ def run_config(ctx: ConfigContext) -> int:
     for dot_path, old_val in commented_flat.items():
         changes[dot_path] = (old_val, _CLEAR)
 
-    if not changes:
+    # 旧 engineUrl → engines マイグレーション: ファイルに engineUrl があれば強制保存対象
+    _original_flat = _flatten(data)
+    _needs_migration = "voicevox.engineUrl" in _original_flat
+
+    if not changes and not _needs_migration:
         out.write("\n変更なし。\n")
         return 0
 
@@ -699,18 +742,31 @@ def run_config(ctx: ConfigContext) -> int:
             out.write(f"  {k}: {old} → (クリア — cascade に委ねる)\n")
         else:
             out.write(f"  {k}: {old} → {new}\n")
+    if not changes and _needs_migration:
+        out.write("  voicevox.engineUrl → voicevox.engines に移行\n")
+
+    # 保存用の merged_flat を計算
+    merged_flat = flat_current.copy()
+    for dot_path in commented_flat:
+        merged_flat.pop(dot_path, None)
+    merged_flat.update(new_flat)
+
+    # N=クリア時に voicevox.engines を削除した場合、legacy engineUrl も必ず削除する。
+    # シードによって flat_current に engineUrl が残っており、canonicalize が
+    # それを元に engines を再生成するのを防ぐ。
+    if "voicevox.engines" in commented_flat:
+        merged_flat.pop("voicevox.engineUrl", None)
+
+    try:
+        new_data = _stg.canonicalize_settings_dict(_unflatten(merged_flat))
+    except ValueError as e:
+        err.write(f"ERROR: {e}\n")
+        return 1
 
     # 保存確認
     if not _prompt_yes_no(ctx, f"\n{settings_path} に保存しますか？"):
         out.write("キャンセルしました。\n")
         return 0
-
-    # 既存の data（unknown keys 含む）に変更を上書きマージ。クリアキーは除去する。
-    merged_flat = flat_current.copy()
-    for dot_path in commented_flat:
-        merged_flat.pop(dot_path, None)
-    merged_flat.update(new_flat)
-    new_data = _unflatten(merged_flat)
 
     if ctx.dry_run:
         out.write("[dry-run] 保存はスキップしました。\n")

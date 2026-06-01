@@ -1,17 +1,18 @@
 {
   // === VOICEVOX Engine connection ===
   "voicevox": {
-    // VOICEVOX HTTP API endpoint.
-    // 127.0.0.1 (not localhost) avoids IPv6 stalls.
-    // Override with env: VOICEVOX_ENGINE_URL
-    "engineUrl": "http://127.0.0.1:50021",
-
-    // Multi-engine parallel synthesis (v0.3.0 / B-121).
-    // When set, overrides engineUrl. All engines must be compatible (same version,
-    // same voice library, same synthesis output). wav cache is shared across engines.
-    // Configure via: vvread config --json '{"voicevox":{"engines":["http://...","http://..."]}}'
-    // Override with env: VOICEVOX_ENGINES (semicolon-separated)
+    // VOICEVOX Engine URL(s). This is the canonical setting key (U-117 / v0.3.1).
+    // Single engine (default):
+    "engines": ["http://127.0.0.1:50021"],
+    // Multi-engine parallel synthesis (v0.3.0 / B-121):
     // "engines": ["http://127.0.0.1:50021", "http://127.0.0.1:50022"],
+    //
+    // Configure interactively: vvread config  (comma-separated URL input)
+    // Configure non-interactively: vvread config --json '{"voicevox":{"engines":["http://..."]}}'
+    // Override with env: VOICEVOX_ENGINES (semicolon-separated)
+    //
+    // NOTE: "engineUrl" (legacy) is still accepted for reading but is automatically
+    // converted to "engines" on save. Use VOICEVOX_ENGINE_URL env var to override at runtime.
 
     // Speaker ID (numeric). List speakers with: vvread doctor
     // Default: 3 (zundamon / normal)

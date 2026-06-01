@@ -17,6 +17,17 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.3.1] - 2026-06-01
+
+### Added
+- **B-003** `vvread url <url>` — Webページ本文をURLから取得して読み上げ。stdlib (urllib / html.parser) のみで実装。Content-Type (text/html / text/plain) / レスポンスサイズ (2 MiB) / scheme / userinfo の安全検証付き。
+- **B-117** `expand_ruby()` — HTMLルビ展開を sanitize パイプラインに追加。`<ruby>漢字<rt>かんじ</rt></ruby>` → 「かんじ」
+### Changed
+- **U-117** `vvread config` および全保存経路で `voicevox.engines` 配列を canonical キーに統一。旧 `voicevox.engineUrl` は legacy alias として読み込みのみ継続し、保存時は自動的に `engines` 配列へ変換される。`vvread config` 対話モードでカンマ区切り URL 入力に対応（`--set voicevox.engines=...` は `--json` を使うよう案内）。`normalize_engines()` / `canonicalize_settings_dict()` を共通ヘルパーとして `settings.py` に追加し、全 writer（`config.py` / `setup.py` / `hook_install.py`）が保存前に通す。
+- publish README の基本設定例を `engineUrl` から `engines` 配列形式に更新。
+
+---
+
 ## [0.3.0] - 2026-06-01
 
 ### Added
