@@ -121,6 +121,9 @@ def _on_stop_env(tmp_path: Path, voicevox_url: str, bin_dir: Path,
     # S-008: VOICEVOX_ENGINE_URL はベース URL。on_stop 内で /version を付加。
     env["VOICEVOX_ENGINE_URL"] = voicevox_url
     env["VOICEVOX_ENGINE"] = voicevox_url
+    # v0.3.0: on_stop が呼び出す say.sh が VOICEVOX_ENGINES を優先するため
+    # project settings の engines[] が漏れ込まないよう明示上書き。
+    env["VOICEVOX_ENGINES"] = voicevox_url
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
     env["VVREAD_PLAYER"] = player
     env["VVREAD_PROJECT_DIR"] = str(tmp_path)

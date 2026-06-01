@@ -28,12 +28,14 @@ class VoicevoxMockState:
     def __init__(self):
         self.fail_audio_query = False
         self.fail_synthesis = False
+        self.fail_synthesis_count: int = 0  # N 回だけ synthesis を失敗させる(B-124 fallback テスト用)
         # 受信したリクエストの記録(検証用)
         self.requests = []
 
     def reset(self):
         self.fail_audio_query = False
         self.fail_synthesis = False
+        self.fail_synthesis_count = 0
         self.requests.clear()
 
 
@@ -106,7 +108,9 @@ def _make_voicevox_handler(state: VoicevoxMockState):
                 return
 
             if "/synthesis" in self.path:
-                if state.fail_synthesis:
+                if state.fail_synthesis or state.fail_synthesis_count > 0:
+                    if state.fail_synthesis_count > 0:
+                        state.fail_synthesis_count -= 1
                     self.send_response(500)
                     self.end_headers()
                     return
@@ -178,5 +182,25 @@ def voicevox_mock():
     }
 
     state.reset()  # function スコープのため実質 no-op だが、将来の scope 変更への備え
+    server.shutdown()
+    thread.join(timeout=2)
+
+
+@pytest.fixture
+def voicevox_mock2():
+    """B-124 マルチエンジンテスト用の2台目 VOICEVOX Engine モック。"""
+    state = VoicevoxMockState()
+    server = HTTPServer(("127.0.0.1", 0), _make_voicevox_handler(state))
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    yield {
+        "port": port,
+        "url": f"http://127.0.0.1:{port}",
+        "state": state,
+    }
+
+    state.reset()
     server.shutdown()
     thread.join(timeout=2)

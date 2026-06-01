@@ -82,12 +82,18 @@ def _load(tmp_path: Path, *, env=None, user_data=None, project_data=None,
 class TestDefaults:
     def test_all_schema_keys_resolve_to_defaults_when_no_inputs(self, tmp_path):
         s = _load(tmp_path)
-        # SCHEMA の全キーが値を持ち、すべて origin=default
+        # SCHEMA の全キーが値を持つ
         assert set(s.values.keys()) == set(settings_module.SCHEMA.keys())
         for k, rv in s.values.items():
-            assert rv.origin.source == "default", (
-                f"{k} should be default, got {rv.origin.source}"
-            )
+            # voicevox.engines は post-processing で engineUrl から派生するため "derived"
+            if k == "voicevox.engines":
+                assert rv.origin.source == "derived", (
+                    f"{k} should be derived, got {rv.origin.source}"
+                )
+            else:
+                assert rv.origin.source == "default", (
+                    f"{k} should be default, got {rv.origin.source}"
+                )
 
     def test_engine_url_default_is_127_not_localhost(self, tmp_path):
         """R-025 backlog 確定事項: localhost は IPv6 binding で詰まる事例があり
@@ -395,7 +401,9 @@ class TestCli:
         # 全 SCHEMA キーが values に含まれる
         for key in settings_module.SCHEMA.keys():
             assert key in payload["values"]
-            assert payload["values"][key]["origin"] == "default"
+            # voicevox.engines は post-processing で engineUrl から派生するため "derived"
+            expected_origin = "derived" if key == "voicevox.engines" else "default"
+            assert payload["values"][key]["origin"] == expected_origin
 
 
 class TestCliEnv:
@@ -492,3 +500,58 @@ class TestChunkingSchema:
         assert "VOICEVOX_CHUNK_CHARS=" in r.stdout
         assert "VOICEVOX_CHUNK_HARD_MAX=" in r.stdout
         assert "VOICEVOX_INLINE_CODE_LIMIT=" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# voicevox.engines (B-122)
+# ---------------------------------------------------------------------------
+
+
+class TestEngines:
+    def test_engines_derived_from_engine_url_when_unset(self, tmp_path):
+        """engines 未設定 → engineUrl から 1 要素配列として派生。origin=derived"""
+        s = _load(tmp_path)
+        rv = s.get("voicevox.engines")
+        assert rv is not None
+        assert rv.value == ["http://127.0.0.1:50021"]
+        assert rv.origin.source == "derived"
+        assert rv.origin.detail == "voicevox.engineUrl"
+
+    def test_engines_from_project_settings(self, tmp_path):
+        """project settings に engines 配列 → リストとして解決"""
+        s = _load(tmp_path, project_data={
+            "voicevox": {"engines": ["http://127.0.0.1:50021", "http://127.0.0.1:50022"]}
+        })
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://127.0.0.1:50021", "http://127.0.0.1:50022"]
+        assert rv.origin.source == "project"
+
+    def test_engines_from_env_semicolon_split(self, tmp_path):
+        """env VOICEVOX_ENGINES='http://a;http://b' → 2 要素リスト"""
+        s = _load(tmp_path, env={
+            "VOICEVOX_ENGINES": "http://127.0.0.1:50021;http://127.0.0.1:50022"
+        })
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://127.0.0.1:50021", "http://127.0.0.1:50022"]
+        assert rv.origin.source == "env"
+
+    def test_engines_validation_removes_empty_and_duplicates(self, tmp_path):
+        """空文字・重複・trailing slash の除外 + parse_errors への警告積み"""
+        s = _load(tmp_path, project_data={
+            "voicevox": {"engines": [
+                "http://127.0.0.1:50021/",  # trailing slash → 除去
+                "",                          # 空文字 → 除外 + warning
+                "http://127.0.0.1:50022",
+                "http://127.0.0.1:50021",   # 重複 → 除去
+            ]}
+        })
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://127.0.0.1:50021", "http://127.0.0.1:50022"]
+        # 空文字の除外で警告が積まれる
+        assert any("voicevox.engines" in msg for _, msg in s.parse_errors)
+
+    def test_engines_env_export_semicolon_separated(self):
+        """settings.py env が VOICEVOX_ENGINES を ; 区切りで出力する"""
+        r = _run_cli("env", env={"VOICEVOX_ENGINES": "http://127.0.0.1:50021;http://127.0.0.1:50022"})
+        assert r.returncode == 0
+        assert "VOICEVOX_ENGINES='http://127.0.0.1:50021;http://127.0.0.1:50022'" in r.stdout

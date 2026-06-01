@@ -16,15 +16,15 @@
 # dynamic scoping を採用していたが、S-006/S-007 で廃止し一元化した。
 
 voicevox_synthesize() {
-  local wav="$1" text="$2" speaker="$3" chunk_label="${4:-?}"
+  local wav="$1" text="$2" speaker="$3" chunk_label="${4:-?}" engine_url_arg="${5:-}"
   local query_file="${wav}.query.json"
   local tuned_file="${query_file}.tuned"
   local encoded phase_ms rc=0
   # S-009: engine 応答停止時の永久ブロック防止
   local _vox_timeout="${VOICEVOX_TIMEOUT:-30}"
   # S-006/S-007: VOICEVOX_* を直解決(settings.py が canonical、ここは fallback)
-  # ENGINE: VOICEVOX_ENGINE_URL > VOICEVOX_ENGINE(legacy, S-008) > default
-  local _engine="${VOICEVOX_ENGINE_URL:-${VOICEVOX_ENGINE:-http://127.0.0.1:50021}}"
+  # ENGINE: 第5引数 > VOICEVOX_ENGINE_URL > VOICEVOX_ENGINE(legacy, S-008) > default
+  local _engine="${engine_url_arg:-${VOICEVOX_ENGINE_URL:-${VOICEVOX_ENGINE:-http://127.0.0.1:50021}}}"
   _engine="${_engine%/}"
   local _speed="${VOICEVOX_SPEED:-1.5}"
   local _pre="${VOICEVOX_PRE_PHONEME:-0}"
