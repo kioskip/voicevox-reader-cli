@@ -1138,3 +1138,70 @@ class TestClearWithN:
         ctx2, out2, err2 = _make_ctx(tmp_path, set_pairs=["voicevox.speed=2.0"])
         cfg.run_config(ctx2)
         assert '// "speaker":' not in path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# B-124: voicevox.engines の config --json 導線 E2E テスト
+# ---------------------------------------------------------------------------
+
+
+class TestEnginesConfigChain:
+    """config --json → settings.py list/env の engines 配列 E2E 検証。"""
+
+    ENGINES_JSON = '{"voicevox":{"engines":["http://127.0.0.1:50021","http://127.0.0.1:50022"]}}'
+
+    def test_json_flag_saves_engines_list(self, tmp_path):
+        """config --json で engines 配列が settings ファイルに保存される。"""
+        ctx, out, err = _make_ctx(tmp_path, json_patch=self.ENGINES_JSON, create=True)
+        rc = cfg.run_config(ctx)
+        assert rc == 0, f"err={err.getvalue()}"
+
+        path = tmp_path / "vvread.settings.json"
+        data = _read_settings(path)
+        assert data["voicevox"]["engines"] == [
+            "http://127.0.0.1:50021",
+            "http://127.0.0.1:50022",
+        ]
+
+    def test_json_flag_dry_run_shows_diff(self, tmp_path):
+        """config --json --dry-run が差分を表示するだけで保存しない。"""
+        ctx, out, err = _make_ctx(tmp_path, json_patch=self.ENGINES_JSON,
+                                  dry_run=True, create=True)
+        rc = cfg.run_config(ctx)
+        assert rc == 0, f"err={err.getvalue()}"
+
+        path = tmp_path / "vvread.settings.json"
+        assert not path.exists(), "dry-run なのにファイルが作成された"
+
+    def test_settings_py_resolves_engines_from_saved_file(self, tmp_path):
+        """config --json で保存した engines を settings.py がリストとして解決する。"""
+        import settings as stg
+
+        # config.py --json 相当の書き込み
+        ctx, _, _ = _make_ctx(tmp_path, json_patch=self.ENGINES_JSON, create=True)
+        cfg.run_config(ctx)
+
+        s = stg.load(cwd=tmp_path, env={})
+        rv = s.get("voicevox.engines")
+        assert rv is not None
+        assert rv.value == ["http://127.0.0.1:50021", "http://127.0.0.1:50022"]
+        assert rv.origin.source == "project"
+
+    def test_settings_py_env_exports_semicolon_separated(self, tmp_path):
+        """settings.py env が VOICEVOX_ENGINES を ';' 区切りで export する。"""
+        import subprocess as _sp
+
+        ctx, _, _ = _make_ctx(tmp_path, json_patch=self.ENGINES_JSON, create=True)
+        cfg.run_config(ctx)
+
+        env_clean = {k: v for k, v in __import__("os").environ.items()
+                     if not k.startswith("VOICEVOX_") and not k.startswith("VVREAD_")}
+
+        r = _sp.run(
+            [sys.executable, str(REPO / "scripts" / "settings.py"), "env"],
+            capture_output=True, text=True,
+            env=env_clean,
+            cwd=str(tmp_path),
+        )
+        assert r.returncode == 0
+        assert "VOICEVOX_ENGINES='http://127.0.0.1:50021;http://127.0.0.1:50022'" in r.stdout

@@ -52,7 +52,8 @@ CLIオプション > 環境変数 > project settings > user settings > default
 
 | 変数 | 既定 | 説明 |
 |---|---|---|
-| `VOICEVOX_ENGINE_URL` | `http://127.0.0.1:50021` | VOICEVOX Engine の base URL |
+| `VOICEVOX_ENGINE_URL` | `http://127.0.0.1:50021` | VOICEVOX Engine の base URL（`engines` 未設定時の fallback） |
+| `VOICEVOX_ENGINES` | (`engineUrl` から派生) | 並列合成に使うエンジン URL を `;` 区切りで指定。設定方法は「マルチエンジン設定」を参照 |
 
 ### 発話パラメータ
 
@@ -101,3 +102,46 @@ CLIオプション > 環境変数 > project settings > user settings > default
 |---|---|---|---|
 | macOS | `~/Library/Application Support/vvread/` | `~/Library/Logs/vvread/` | `~/Library/Caches/vvread/` |
 | Linux / WSL | `${XDG_STATE_HOME:-~/.local/state}/vvread/` | `${XDG_STATE_HOME:-~/.local/state}/vvread/logs/` | `${XDG_CACHE_HOME:-~/.cache}/vvread/` |
+
+---
+
+## マルチエンジン設定（v0.3.0）
+
+複数の VOICEVOX Engine を並列利用することで、音声合成と再生をオーバーラップさせて応答時間を改善できます。
+
+### 設定方法
+
+```bash
+vvread config --json '{"voicevox":{"engines":["http://127.0.0.1:50021","http://127.0.0.1:50022"]}}'
+```
+
+`vvread.settings.json` に直接記述する場合：
+
+```json
+{
+  "voicevox": {
+    "engines": [
+      "http://127.0.0.1:50021",
+      "http://127.0.0.1:50022"
+    ]
+  }
+}
+```
+
+### 動作
+
+- エンジン M 台に chunk を round-robin で分散。各エンジンは最大 1 合成を同時担当
+- M=1 でも再生中に次 chunk の合成が進む（prefetch 効果）
+- 合成失敗時は同一エンジンへ 1 回 retry。エンジン停止時の自動切り替えは対応予定
+
+### 前提
+
+複数エンジンは同一バージョン・同一音声ライブラリの互換構成である必要があります。wav キャッシュはエンジン間で共有されます（異種エンジンは非対応）。
+
+### 確認
+
+```bash
+vvread doctor
+# VOICEVOX Engines: [OK] http://127.0.0.1:50021
+#                   [OK] http://127.0.0.1:50022
+```

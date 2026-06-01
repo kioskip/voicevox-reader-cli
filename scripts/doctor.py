@@ -409,6 +409,70 @@ def check_engine(
     return items
 
 
+def check_engines_multi(
+    settings_obj: Optional[_settings.Settings] = None,
+) -> List[CheckItem]:
+    """voicevox.engines の全 URL を疎通確認する（B-125）。
+
+    severity 規則:
+    - 全エンジン到達可能 → STATUS_OK
+    - 一部エンジン到達不可 → STATUS_WARN（doctor exit 0 のまま）
+    - 全エンジン到達不可 → STATUS_ERROR（doctor exit 1）
+
+    単一エンジン設定（engines が 1 要素）の場合は check_engine() と同じ挙動。
+    """
+    if settings_obj is None:
+        settings_obj = _settings.load()
+
+    engines_rv = settings_obj.values.get("voicevox.engines")
+    engines: List[str] = engines_rv.value if engines_rv and engines_rv.value else []
+
+    # 単一エンジン / engines 未設定: 現行 check_engine() をそのまま使う（二重チェックなし）
+    if len(engines) <= 1:
+        return check_engine(settings_obj=settings_obj)
+
+    items: List[CheckItem] = []
+
+    # /version 疎通確認（全エンジン）
+    reachable: List[tuple] = []
+    unreachable: List[tuple] = []
+    for url in engines:
+        base = _normalize_engine_base(url)
+        version_text, err = _http_get(f"{base}/version")
+        if err:
+            unreachable.append((url, base, err))
+        else:
+            v = version_text.strip().strip('"')
+            reachable.append((url, base, v))
+
+    all_failed = len(reachable) == 0
+    status_ng = STATUS_ERROR if all_failed else STATUS_WARN
+
+    for _url, base, v in reachable:
+        items.append(CheckItem(
+            section="engine", label="reachable",
+            status=STATUS_OK,
+            detail=f"{base}  version={v}",
+        ))
+    for _url, base, err in unreachable:
+        items.append(CheckItem(
+            section="engine", label="reachable",
+            status=status_ng,
+            detail=f"{base}: {err}",
+            hint="VOICEVOX Engine が起動しているか確認してください",
+        ))
+
+    # primary engine が到達可能な場合: /speakers + target speaker の詳細チェック
+    # reachable の先頭を primary として使う（設定順を優先）
+    if reachable:
+        primary_url = reachable[0][0]
+        primary_items = check_engine(engine_url=primary_url, settings_obj=settings_obj)
+        # /version check は既に上で実施済みなので label="reachable" は除外
+        items.extend(i for i in primary_items if i.label != "reachable")
+
+    return items
+
+
 def engine_section_skipped() -> List[CheckItem]:
     return [CheckItem(
         section="engine", label="skipped",
@@ -723,7 +787,7 @@ def collect(*, offline: bool = False, scope: str = "runtime",
         items.extend(engine_section_skipped())
         items.extend(claude_section_skipped())
     else:
-        items.extend(check_engine(settings_obj=s))
+        items.extend(check_engines_multi(settings_obj=s))
         items.extend(check_claude())
 
     items.extend(check_hooks(cwd=cwd))

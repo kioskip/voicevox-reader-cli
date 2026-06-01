@@ -73,6 +73,16 @@ source "${VVREAD_SCRIPTS_DIR}/lib/say_pipeline.sh"
 
 vvread_say_parse_args "$@"
 
+# ===== エンジン配列 =====
+# VOICEVOX_ENGINES は settings.py env で ';' 区切りで解決済み。
+# 未設定なら VOICEVOX_ENGINE_URL の単一要素にフォールバック。
+ENGINES=()
+if [ -n "${VOICEVOX_ENGINES:-}" ]; then
+  IFS=';' read -ra ENGINES <<< "${VOICEVOX_ENGINES}"
+fi
+[ "${#ENGINES[@]}" -eq 0 ] && ENGINES=("${VOICEVOX_ENGINE_URL:-http://127.0.0.1:50021}")
+ENGINE_COUNT="${#ENGINES[@]}"
+
 # ===== 発話パラメータ =====
 # settings.py env の eval で VOICEVOX_* は解決済み(env > project > user > default)。
 # voicevox_resolve_speaker は settings.py 失敗時のバックストップとして機能する。
@@ -119,38 +129,97 @@ SESSION_ID=$(vvread_session_start "${SESSION_FILE}")
 # 各 chunk の wav を入れる prefix
 WAV_PREFIX="${STATE_DIR}/voice_${SESSION_ID}"
 
-# 終了時(正常 / 失敗 / preempted いずれも)に自プロセスの wav を全部消す
-trap '
-  rm -f "'"${WAV_PREFIX}"'"_* 2>/dev/null
-' EXIT
+# synth background PID を管理する配列(vvread_say_launch_synth_bg が書き込む)
+SYNTH_PIDS=()
 
-log_info "say start chunks=${CHUNK_TOTAL} text_chars=${#TEXT} speaker=${SPEAKER} session=${SESSION_ID}"
+# 終了時に全 synth worker を kill → wait → wav 削除(正常 / 失敗 / preempted 共通)
+_vvread_say_cleanup() {
+  local _idx
+  if [ "${#SYNTH_PIDS[@]}" -gt 0 ]; then
+    for _idx in "${!SYNTH_PIDS[@]}"; do
+      kill "${SYNTH_PIDS[$_idx]}" 2>/dev/null || true
+    done
+    for _idx in "${!SYNTH_PIDS[@]}"; do
+      wait "${SYNTH_PIDS[$_idx]}" 2>/dev/null || true
+      unset "SYNTH_PIDS[$_idx]"
+    done
+  fi
+  rm -f "${WAV_PREFIX}"_* 2>/dev/null || true
+}
+trap _vvread_say_cleanup EXIT
 
-# ===== orchestration loop =====
+log_info "say start chunks=${CHUNK_TOTAL} text_chars=${#TEXT} speaker=${SPEAKER} engines=${ENGINE_COUNT} session=${SESSION_ID}"
+
+# ===== orchestration loop (Producer/Consumer, B-124) =====
+#
+# 設計: 固定ウィンドウ方式。各エンジンは最大 1 合成を担当。
+#   初期バッチ: chunk 0..M-1 を並列 synth 起動
+#   play loop i:
+#     pre-wait preempt check
+#     wait SYNTH_PIDS[i] → unset → post-wait check
+#     synth 失敗 → rm partial wav → 同一 engine retry（next 起動より前）
+#     post-retry check → i+M を background synth → play → rm wav → post-play check
+
+# 初期バッチ: chunk 0..M-1 を並列 synth 起動
+j=0
+while [ "${j}" -lt "${ENGINE_COUNT}" ] && [ "${j}" -lt "${CHUNK_TOTAL}" ]; do
+  vvread_say_launch_synth_bg "${j}" "${CHUNKS[${j}]}" "${WAV_PREFIX}_${j}.wav" \
+    "${SPEAKER}" "${CHUNK_TOTAL}" "${ENGINES[$((j % ENGINE_COUNT))]}"
+  j=$((j + 1))
+done
 
 i=0
 while [ "${i}" -lt "${CHUNK_TOTAL}" ]; do
+
+  # 1. pre-wait preempt check
   if ! vvread_session_is_current "${SESSION_FILE}" "${SESSION_ID}"; then
-    log_info "say superseded chunk=$((i + 1))/${CHUNK_TOTAL} phase=pre_synth"
+    log_info "say superseded chunk=$((i + 1))/${CHUNK_TOTAL} phase=pre_wait"
     exit 0
   fi
 
   WAV="${WAV_PREFIX}_${i}.wav"
 
-  if ! vvread_say_synth_chunk "${i}" "${CHUNKS[${i}]}" "${WAV}" "${SPEAKER}" "${CHUNK_TOTAL}"; then
-    log_info "say synth_failed chunk=$((i + 1))/${CHUNK_TOTAL}"
-    printf 'vvread say: synthesis failed for chunk %s\n' "$((i + 1))" >&2
-    exit 1
-  fi
+  # 2. synth 完了を wait(set -e 対応: || で RC 捕捉)
+  synth_rc=0
+  wait "${SYNTH_PIDS[${i}]}" || synth_rc=$?
+  unset "SYNTH_PIDS[${i}]"
 
-  # synth と play の境界。新しい say が来ていれば再生せず終了
+  # 3. post-wait session check
   if ! vvread_session_is_current "${SESSION_FILE}" "${SESSION_ID}"; then
-    log_info "say superseded chunk=$((i + 1))/${CHUNK_TOTAL} phase=pre_play"
+    log_info "say superseded chunk=$((i + 1))/${CHUNK_TOTAL} phase=post_wait"
     rm -f "${WAV}"
     exit 0
   fi
 
-  log_info "say play chunk=$((i + 1))/${CHUNK_TOTAL}"
+  # 4. synth 失敗 → partial wav 削除 → 同一 engine retry(next 起動より先に実施)
+  if [ "${synth_rc}" -ne 0 ]; then
+    rm -f "${WAV}"
+    retry_engine="${ENGINES[$((i % ENGINE_COUNT))]}"
+    log_info "say synth_failed_retry chunk=$((i + 1))/${CHUNK_TOTAL} engine=${retry_engine}"
+    if ! vvread_say_synth_chunk "${i}" "${CHUNKS[${i}]}" "${WAV}" "${SPEAKER}" \
+        "${CHUNK_TOTAL}" "${retry_engine}"; then
+      log_info "say synth_failed chunk=$((i + 1))/${CHUNK_TOTAL}"
+      printf 'vvread say: synthesis failed for chunk %s\n' "$((i + 1))" >&2
+      exit 1
+    fi
+  fi
+
+  # 5. post-retry session check
+  if ! vvread_session_is_current "${SESSION_FILE}" "${SESSION_ID}"; then
+    log_info "say superseded chunk=$((i + 1))/${CHUNK_TOTAL} phase=post_retry"
+    rm -f "${WAV}"
+    exit 0
+  fi
+
+  # 6. look-ahead: fallback 完了後に next worker を起動(窓を維持)
+  next=$((i + ENGINE_COUNT))
+  if [ "${next}" -lt "${CHUNK_TOTAL}" ]; then
+    vvread_say_launch_synth_bg "${next}" "${CHUNKS[${next}]}" "${WAV_PREFIX}_${next}.wav" \
+      "${SPEAKER}" "${CHUNK_TOTAL}" "${ENGINES[$((next % ENGINE_COUNT))]}"
+  fi
+
+  # 7. play
+  log_info "say play chunk=$((i + 1))/${CHUNK_TOTAL} engine=${ENGINES[$((i % ENGINE_COUNT))]}"
 
   if ! vvread_say_play_chunk "${i}" "${WAV}" "${PID_FILE}" "${CHUNK_TOTAL}"; then
     exit 1
@@ -158,7 +227,7 @@ while [ "${i}" -lt "${CHUNK_TOTAL}" ]; do
 
   rm -f "${WAV}"
 
-  # 再生完了直後。preempt されていれば残り chunk をスキップ
+  # 8. post-play preempt check
   if ! vvread_session_is_current "${SESSION_FILE}" "${SESSION_ID}"; then
     log_info "say superseded chunk=$((i + 1))/${CHUNK_TOTAL} phase=post_play"
     exit 0

@@ -65,6 +65,7 @@ SCHEMA: Dict[str, Tuple[Any, Optional[str], type]] = {
     "voicevox.chunkChars":       (CHUNK_CHARS_DEFAULT,       "VOICEVOX_CHUNK_CHARS",       int),
     "voicevox.chunkHardMax":     (CHUNK_HARD_MAX_DEFAULT,    "VOICEVOX_CHUNK_HARD_MAX",    int),
     "voicevox.inlineCodeLimit":  (INLINE_CODE_LIMIT_DEFAULT, "VOICEVOX_INLINE_CODE_LIMIT", int),
+    "voicevox.engines":          (None, "VOICEVOX_ENGINES", list),
     # ログ
     "log.level":            ("INFO",   "VOICEVOX_LOG_LEVEL", str),
     "log.maxBytes":         (10485760, "VOICEVOX_LOG_MAX_BYTES", int),
@@ -206,6 +207,32 @@ def _read_settings_file(
     return data, None
 
 
+def _validate_engines(
+    engines: list,
+    parse_errors: List[Tuple[str, str]],
+    source: str,
+) -> list:
+    """engines 配列を検証・正規化する。
+
+    - 非文字列・空文字列を除外（除外発生時は parse_errors に警告を積む）
+    - trailing slash 除去
+    - 順序を維持しつつ重複 URL を除去
+    """
+    seen: set = set()
+    result = []
+    for item in engines:
+        if not isinstance(item, str) or not item.strip():
+            parse_errors.append(
+                (source, f"voicevox.engines: invalid entry {item!r} excluded")
+            )
+            continue
+        url = item.strip().rstrip("/")
+        if url not in seen:
+            seen.add(url)
+            result.append(url)
+    return result
+
+
 def _flatten(obj: Any, prefix: str = "") -> Dict[str, Any]:
     """ネストされた dict を dot-path に flatten する。
 
@@ -254,6 +281,14 @@ def _coerce(value: Any, target: type) -> Tuple[Any, bool]:
         if isinstance(value, bool):
             return None, False
         return str(value), True
+    if target is list:
+        if isinstance(value, list):
+            return value, True
+        if isinstance(value, str):
+            # env から: "http://a;http://b" → [url, url]
+            items = [s.strip() for s in value.split(";") if s.strip()]
+            return items, True
+        return None, False
     return None, False
 
 
@@ -375,6 +410,29 @@ def load(
 
         settings.values[key] = resolved
 
+    # voicevox.engines の post-processing:
+    # 未設定・空・バリデーション後空 → voicevox.engineUrl から 1 要素派生
+    engines_rv = settings.values.get("voicevox.engines")
+    raw_engines = engines_rv.value if engines_rv else None
+    if raw_engines:
+        validated = _validate_engines(
+            raw_engines,
+            settings.parse_errors,
+            engines_rv.origin.detail or "",
+        )
+    else:
+        validated = None
+
+    if validated:
+        settings.values["voicevox.engines"] = ResolvedValue(
+            validated, engines_rv.origin  # type: ignore[union-attr]
+        )
+    else:
+        engine_url = settings.values["voicevox.engineUrl"].value
+        settings.values["voicevox.engines"] = ResolvedValue(
+            [engine_url.rstrip("/")], Origin("derived", "voicevox.engineUrl")
+        )
+
     return settings
 
 
@@ -409,7 +467,10 @@ def _cmd_env(args: argparse.Namespace) -> int:
             continue
         rv = settings.values[key]
         # 常にシングルクォートで囲む(数値・URLでも安全、将来の特殊文字にも対応)
-        val = str(rv.value).replace("'", "'\"'\"'")
+        if isinstance(rv.value, list):
+            val = ";".join(str(v) for v in rv.value).replace("'", "'\"'\"'")
+        else:
+            val = str(rv.value).replace("'", "'\"'\"'")
         print(f"export {env_var}='{val}'")
     return 0
 

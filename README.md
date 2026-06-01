@@ -158,6 +158,10 @@ vvread doctor                  # ヘルスチェック
 
 設定ファイル（`vvread.settings.json`）をプロジェクトルートに置くか、`vvread config` コマンドで編集してください。
 
+### 複数エンジンの並列利用（v0.3.0）
+
+VOICEVOX Engine を複数台起動して並列合成できます。詳細は [`CONFIGURATION.md` — マルチエンジン設定](CONFIGURATION.md#マルチエンジン設定v030) を参照してください。
+
 ---
 
 ## 7. Claude Code との連携

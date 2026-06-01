@@ -17,6 +17,17 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.3.0] - 2026-06-01
+
+### Added
+
+- **マルチエンジン並列合成 / Prefetch**: 複数の VOICEVOX Engine に chunk を round-robin で分散し、synth/play をオーバーラップさせる Producer/Consumer アーキテクチャを実装した。M=1 でも再生中に次 chunk の合成が進む (prefetch)。
+- `voicevox.engines` 設定スキーマを追加。`engineUrl` から自動派生、`vvread config --json` 経由で複数エンジン URL を設定可能。`VOICEVOX_ENGINES='url1;url2'` 形式の env 設定にも対応。
+- `voicevox_synthesize` に engine URL 引数を追加。省略時は従来の env fallback を維持（後方互換）。
+- `vvread doctor` が `voicevox.engines` に列挙した全 URL の疎通確認を実施するようになった。一部到達不可は WARN、全到達不可は ERROR で exit 1。
+
+---
+
 ## [0.2.8] - 2026-05-31
 
 ### Added

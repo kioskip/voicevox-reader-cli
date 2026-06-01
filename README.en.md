@@ -162,6 +162,10 @@ Detailed configuration references are currently available in Japanese:
 
 Place `vvread.settings.json` in your project root, or use `vvread config` to edit it interactively.
 
+### Multiple engines (v0.3.0)
+
+You can run multiple VOICEVOX Engine instances for parallel synthesis. See [`CONFIGURATION.md` — Multi-engine setup](CONFIGURATION.md#マルチエンジン設定v030) for details.
+
 ---
 
 ## 7. Claude Code integration

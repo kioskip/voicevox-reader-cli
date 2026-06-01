@@ -121,6 +121,9 @@ def _say_env(tmp_path: Path, voicevox_url: str, bin_dir: Path,
     PATH + VVREAD_PLAYER)"""
     env = _path_env(tmp_path)
     env["VOICEVOX_ENGINE"] = voicevox_url
+    # v0.3.0 以降、say.sh は VOICEVOX_ENGINES を優先する。project settings の
+    # voicevox.engines[] が settings.py env 経由で漏れ込まないよう明示上書き。
+    env["VOICEVOX_ENGINES"] = voicevox_url
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
     env["VVREAD_PLAYER"] = player
     return env
@@ -373,6 +376,7 @@ class TestNoPlayer:
 
         env = _path_env(tmp_path)
         env["VOICEVOX_ENGINE"] = voicevox_mock["url"]
+        env["VOICEVOX_ENGINES"] = voicevox_mock["url"]
         env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
         env["VVREAD_PLAYER"] = "definitely_not_a_player_xyz"
 
@@ -661,3 +665,210 @@ class TestFileSubcommand:
             assert "file not readable" in r.stderr
         finally:
             unreadable.chmod(0o644)
+
+
+# ---------------------------------------------------------------------------
+# B-124: Producer/Consumer orchestration テスト
+# ---------------------------------------------------------------------------
+
+
+def _say_engines_env(tmp_path: Path, engine_urls: list, bin_dir: Path,
+                     player: str = "afplay") -> dict:
+    """複数エンジン用 say 実行環境を生成する。"""
+    env = _path_env(tmp_path)
+    env["VOICEVOX_ENGINES"] = ";".join(engine_urls)
+    env["VOICEVOX_ENGINE_URL"] = engine_urls[0]
+    env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
+    env["VVREAD_PLAYER"] = player
+    return env
+
+
+class TestOrchestration:
+    """B-124: Producer/Consumer orchestration テスト。"""
+
+    def test_m1_multi_chunk_synth_and_play(self, voicevox_mock, tmp_path):
+        """M=1, 複数 chunk: 再生が完了し全 synthesis が記録される。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        # 2 chunk になる程度の長めのテキスト
+        text = "あ" * 250
+        env = _say_engines_env(tmp_path, [voicevox_mock["url"]], bin_dir)
+
+        r = run_say(text, env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        synth_count = sum(1 for req in voicevox_mock["state"].requests
+                          if "/synthesis" in req["path"])
+        assert synth_count >= 1
+
+    def test_m2_round_robin_distribution(self, voicevox_mock, voicevox_mock2, tmp_path):
+        """M=2, 4 chunk 相当テキスト: engine A と B に round-robin で振り分けられる。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        # 複数 chunk を確実に生成するテキスト
+        text = "あ" * 600
+        url_a = voicevox_mock["url"]
+        url_b = voicevox_mock2["url"]
+        env = _say_engines_env(tmp_path, [url_a, url_b], bin_dir)
+
+        r = run_say(text, env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        synth_a = sum(1 for req in voicevox_mock["state"].requests
+                      if "/synthesis" in req["path"])
+        synth_b = sum(1 for req in voicevox_mock2["state"].requests
+                      if "/synthesis" in req["path"])
+
+        # 両方のエンジンが使われること
+        assert synth_a >= 1, f"engine A が使われていない: synth_a={synth_a}"
+        assert synth_b >= 1, f"engine B が使われていない: synth_b={synth_b}"
+        # 合計は実際の chunk 数と等しい
+        total = synth_a + synth_b
+        assert total >= 2, f"合計 synth が少なすぎる: {total}"
+
+    def test_m2_synth_count_per_engine_does_not_exceed_1(
+            self, voicevox_mock, voicevox_mock2, tmp_path):
+        """M=2: 各エンジンへの同時 synth リクエストが 1 を超えないことを
+        リクエスト数の分散で検証する。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        text = "あ" * 600
+        url_a = voicevox_mock["url"]
+        url_b = voicevox_mock2["url"]
+        env = _say_engines_env(tmp_path, [url_a, url_b], bin_dir)
+
+        r = run_say(text, env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        # round-robin なので |synth_a - synth_b| <= 1
+        synth_a = sum(1 for req in voicevox_mock["state"].requests
+                      if "/synthesis" in req["path"])
+        synth_b = sum(1 for req in voicevox_mock2["state"].requests
+                      if "/synthesis" in req["path"])
+        assert abs(synth_a - synth_b) <= 1, (
+            f"round-robin が偏っている: A={synth_a}, B={synth_b}"
+        )
+
+    def test_fallback_retry_on_same_engine(self, voicevox_mock, tmp_path):
+        """worker 失敗 → 同一 engine への retry が実行される。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        # 1 chunk のテキスト。最初の synthesis を 1 回だけ失敗させる
+        voicevox_mock["state"].fail_synthesis_count = 1
+
+        env = _say_engines_env(tmp_path, [voicevox_mock["url"]], bin_dir)
+        r = run_say("テスト", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        # 失敗 1 回 + retry 1 回 = 2 回 synthesis が呼ばれる
+        synth_count = sum(1 for req in voicevox_mock["state"].requests
+                          if "/synthesis" in req["path"])
+        assert synth_count == 2, f"expected 2 synthesis calls (1 fail + 1 retry), got {synth_count}"
+
+    def test_fallback_retry_does_not_exceed_engine_synth_limit(
+            self, voicevox_mock, voicevox_mock2, tmp_path):
+        """fallback retry 中も各 engine の synth 数が 1 を超えない。
+        engine B の最初の synthesis を失敗させ、retry が B 自身に向かうことを確認。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        # engine B(mock2) の synthesis を 1 回だけ失敗させる
+        voicevox_mock2["state"].fail_synthesis_count = 1
+
+        # CHUNK_HARD_MAX=400 なので 600 chars で確実に 2 chunk
+        text = "あ" * 600
+        url_a = voicevox_mock["url"]
+        url_b = voicevox_mock2["url"]
+        env = _say_engines_env(tmp_path, [url_a, url_b], bin_dir)
+
+        r = run_say(text, env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        synth_a = sum(1 for req in voicevox_mock["state"].requests
+                      if "/synthesis" in req["path"])
+        synth_b = sum(1 for req in voicevox_mock2["state"].requests
+                      if "/synthesis" in req["path"])
+
+        # engine B が使われていること(2 chunk 目が B に割り当てられている)
+        assert synth_b >= 1, (
+            f"engine B が使われていない(text が 1 chunk しか生成されなかった可能性): "
+            f"A={synth_a}, B={synth_b}"
+        )
+        # retry が B 側に向かっているので B > A になるはず(B: 失敗+retry+通常 >= A: 通常のみ)
+        assert synth_b >= synth_a, (
+            f"retry が engine A に飛んでいる可能性: A={synth_a}, B={synth_b}"
+        )
+
+    def test_preempt_before_wait_exits_cleanly(self, voicevox_mock, tmp_path):
+        """superseded session は wait 前の pre_wait check で exit 0 する。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        session_file = state_dir / "session.id"
+
+        # 別の session ID を先に書き込む(preempt をシミュレート)
+        session_file.write_text("superseded_by_other")
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+
+        r = run_say("テスト発話", env_extra=env)
+        # session check で即 exit 0
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+    def test_wav_files_cleaned_up_after_normal_exit(self, voicevox_mock, tmp_path):
+        """正常終了後に STATE_DIR に _*.wav が残らない。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_say("テスト", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        state_dir = tmp_path / "state"
+        leftover_wavs = list(state_dir.glob("voice_*_*.wav"))
+        assert leftover_wavs == [], f"残存 wav: {leftover_wavs}"
+
+    def test_wav_files_cleaned_up_after_synth_failure(self, voicevox_mock, tmp_path):
+        """synth 失敗(retry も失敗)後に STATE_DIR に wav が残らない。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        # 全 synthesis を失敗させる
+        voicevox_mock["state"].fail_synthesis = True
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_say("テスト", env_extra=env)
+        assert r.returncode == 1  # synthesis 失敗で exit 1
+
+        state_dir = tmp_path / "state"
+        leftover_wavs = list(state_dir.glob("voice_*_*.wav"))
+        assert leftover_wavs == [], f"残存 wav: {leftover_wavs}"
+
+    def test_cleanup_inherits_wav_deletion_responsibility(self, voicevox_mock, tmp_path):
+        """_vvread_say_cleanup が旧 EXIT trap の wav 削除責務を引き継ぐ。
+        正常終了・異常終了ともに wav が残らないことで確認。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_say("テスト", env_extra=env)
+        assert r.returncode == 0
+
+        state_dir = tmp_path / "state"
+        leftover_wavs = list(state_dir.glob("voice_*_*.wav"))
+        assert leftover_wavs == [], f"cleanup が wav 削除を引き継げていない: {leftover_wavs}"

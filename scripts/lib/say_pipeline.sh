@@ -24,7 +24,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/os.sh"
 
 vvread_say_synth_chunk() {
-  local idx="$1" text="$2" wav="$3" speaker="$4" chunk_total="$5"
+  local idx="$1" text="$2" wav="$3" speaker="$4" chunk_total="$5" engine_url="${6:-}"
 
   local cache_key=""
   if [ -n "${CACHE_DIR:-}" ]; then
@@ -53,7 +53,7 @@ vvread_say_synth_chunk() {
   fi
 
   # 合成失敗時は即返す。後続 if 文の終了コードに上書きされないよう明示的に伝播
-  voicevox_synthesize "${wav}" "${text}" "${speaker}" "$((idx + 1))/${chunk_total}" || return $?
+  voicevox_synthesize "${wav}" "${text}" "${speaker}" "$((idx + 1))/${chunk_total}" "${engine_url}" || return $?
 
   if [ -n "${cache_key}" ] && [ -f "${wav}" ]; then
     local tmp_wav="${CACHE_DIR}/${cache_key}.${$}.tmp"
@@ -62,6 +62,19 @@ vvread_say_synth_chunk() {
       log_debug "say cache_write chunk=$((idx + 1))/${chunk_total} key=${cache_key}"
     fi
   fi
+}
+
+# 非同期 synth を起動し SYNTH_PIDS[$idx] に PID を保存する。
+# command substitution を使わず現在 shell で直接 & 起動する（subshell 即時復帰保証のため）。
+# 呼び出し元の SYNTH_PIDS 配列を直接変更する。
+vvread_say_launch_synth_bg() {
+  local idx="$1" text="$2" wav="$3" speaker="$4" chunk_total="$5" engine_url="${6:-}"
+
+  vvread_say_synth_chunk \
+    "${idx}" "${text}" "${wav}" "${speaker}" "${chunk_total}" "${engine_url}" &
+
+  # shellcheck disable=SC2034
+  SYNTH_PIDS[$idx]="$!"
 }
 
 # 1 chunk を再生する（同期、再生完了まで wait）。
