@@ -167,7 +167,9 @@ class TestHappyPath:
         settings = cwd / "vvread.settings.json"
         assert settings.exists()
         data = json.loads(settings.read_text(encoding="utf-8"))
-        assert data["voicevox"]["engineUrl"] == voicevox_mock["url"]
+        normalized_url = voicevox_mock["url"].rstrip("/")
+        assert data["voicevox"]["engines"] == [normalized_url]
+        assert "engineUrl" not in data["voicevox"]
 
 
 # ---------------------------------------------------------------------------

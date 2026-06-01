@@ -51,6 +51,7 @@ Usage: vvread [<text>] [--speaker N]
 発話系（直接テキスト・パイプ対応）:
   <text>                        テキストを読み上げる（位置引数）
   file <path>                   ファイルを読み上げる
+  url <url>                     URLのWebページ本文を読み上げる
   say <text>                    テキストを読み上げる（互換形式）
   synth <text> --output FILE    合成のみ。wav を FILE に書き出す
   play <wav>                    既存 wav を再生
@@ -87,7 +88,7 @@ EOF
 # NOTE: 新しい subcommand を追加したら必ずここも更新すること
 _is_subcommand() {
   case "$1" in
-    help|-h|--help|say|synth|play|on-stop|stop|mute|off|on|status|clean|install|uninstall|doctor|setup|speakers|config|edit|file)
+    help|-h|--help|say|synth|play|on-stop|stop|mute|off|on|status|clean|install|uninstall|doctor|setup|speakers|config|edit|file|url)
       return 0
       ;;
     *)
@@ -158,6 +159,9 @@ case "${subcommand}" in
     ;;
   file)
     exec "${VVREAD_SCRIPTS_DIR}/cmd/file.sh" "$@"
+    ;;
+  url)
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/url.sh" "$@"
     ;;
   say)
     exec "${VVREAD_SCRIPTS_DIR}/cmd/say.sh" "$@"

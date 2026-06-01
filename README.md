@@ -28,6 +28,7 @@
 
 - 🗣️ **コマンドで読み上げ**: `vvread "読み上げます"` で読み上げ
 - 🗒️ **ファイルの読み込み**: `vvread file FILENAME` でファイルを読み上げ
+- 🌐 **URL読み上げ**: `vvread url https://...` でWebページ本文を読み上げ
 - 💻 **パイプ連携**: `echo "テキスト" | vvread` パイプを繋いで受け取ったテキストの読み上げ
 - 📢 **Claude Code 連携**: Stop hook で Claude Code の最終応答を自動読み上げ
 - ⚡ **prefetch**: 長文を分割し、再生中に次の文節を先行して合成
@@ -133,6 +134,7 @@ vvread doctor         # ヘルスチェック
 ```bash
 vvread "テキスト"              # 読み上げ
 vvread file README.md          # ファイルを読み上げ
+vvread url https://example.com # URLのWebページ本文を読み上げ
 cat build.log | vvread         # パイプ入力
 vvread stop                    # 再生停止
 vvread doctor                  # ヘルスチェック
@@ -149,7 +151,7 @@ vvread doctor                  # ヘルスチェック
 ```jsonc
 {
   "voicevox": {
-    "engineUrl": "http://127.0.0.1:50021",
+    "engines": ["http://127.0.0.1:50021"],
     "speaker": 3,
     "speed": 1.5
   }

@@ -146,7 +146,9 @@ class TestStepEngine:
         settings_path = cwd / "vvread.settings.json"
         assert settings_path.exists()
         data = json.loads(settings_path.read_text(encoding="utf-8"))
-        assert data["voicevox"]["engineUrl"] == voicevox_mock["url"]
+        normalized_url = voicevox_mock["url"].rstrip("/")
+        assert data["voicevox"]["engines"] == [normalized_url]
+        assert "engineUrl" not in data["voicevox"]
 
     def test_default_url_no_settings_write(self, tmp_path, monkeypatch):
         """default URL なら settings は書かない。"""

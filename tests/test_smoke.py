@@ -157,13 +157,15 @@ class TestSmokeFullFlow:
             for h in stop_hooks
         ), f"Stop hook not registered: {stop_hooks!r}"
 
-        # vvread.settings.json に engineUrl が書かれる
+        # vvread.settings.json に engines が書かれる（engineUrl ではなく engines に統一）
         vvread_settings_path = cwd / "vvread.settings.json"
         assert vvread_settings_path.exists()
         vvread_settings = json.loads(
             vvread_settings_path.read_text(encoding="utf-8")
         )
-        assert vvread_settings["voicevox"]["engineUrl"] == voicevox_mock["url"]
+        normalized_url = voicevox_mock["url"].rstrip("/")
+        assert vvread_settings["voicevox"]["engines"] == [normalized_url]
+        assert "engineUrl" not in vvread_settings.get("voicevox", {})
 
         # ─── Step 2: say ─────────────────────────────────────────────────
         r_say = _run(["say", "テスト音声"], env=env, cwd=cwd, timeout=30)

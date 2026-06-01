@@ -136,6 +136,7 @@ Detailed command references are currently available in Japanese:
 ```bash
 vvread "text"                  # speak text
 vvread file README.md          # read a file aloud
+vvread url https://example.com # fetch a webpage and read it aloud
 cat build.log | vvread         # pipe input
 vvread stop                    # stop playback
 vvread doctor                  # health check
@@ -153,7 +154,7 @@ Detailed configuration references are currently available in Japanese:
 ```jsonc
 {
   "voicevox": {
-    "engineUrl": "http://127.0.0.1:50021",
+    "engines": ["http://127.0.0.1:50021"],
     "speaker": 3,
     "speed": 1.5
   }

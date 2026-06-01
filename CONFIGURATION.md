@@ -26,7 +26,7 @@ CLIオプション > 環境変数 > project settings > user settings > default
 ```jsonc
 {
   "voicevox": {
-    "engineUrl": "http://127.0.0.1:50021",
+    "engines": ["http://127.0.0.1:50021"],  // 接続先 URL（配列形式が標準）
     "speaker": 3,
     "speed": 1.5,
     "maxChars": 500,   // 0 = 上限なし (内部 cap: 9999)
@@ -52,8 +52,8 @@ CLIオプション > 環境変数 > project settings > user settings > default
 
 | 変数 | 既定 | 説明 |
 |---|---|---|
-| `VOICEVOX_ENGINE_URL` | `http://127.0.0.1:50021` | VOICEVOX Engine の base URL（`engines` 未設定時の fallback） |
-| `VOICEVOX_ENGINES` | (`engineUrl` から派生) | 並列合成に使うエンジン URL を `;` 区切りで指定。設定方法は「マルチエンジン設定」を参照 |
+| `VOICEVOX_ENGINE_URL` | (engines[0] から派生) | VOICEVOX Engine の base URL（legacy alias、runtime export 互換用） |
+| `VOICEVOX_ENGINES` | `http://127.0.0.1:50021` | 並列合成に使うエンジン URL を `;` 区切りで指定。設定方法は「マルチエンジン設定」を参照 |
 
 ### 発話パラメータ
 

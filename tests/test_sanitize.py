@@ -57,6 +57,64 @@ class TestSanitizePassthrough:
         assert sanitize.sanitize("hello<br>world") == "helloworld"
 
 
+class TestExpandRuby:
+    """expand_ruby() — ルビ展開の直接テストと PIPELINE 統合確認"""
+
+    @pytest.mark.parametrize(
+        "src,expected",
+        [
+            # 基本: <rt> 読みに置換
+            ("<ruby>漢字<rt>かんじ</rt></ruby>", "かんじ"),
+            ("<ruby>東京都<rt>とうきょうと</rt></ruby>", "とうきょうと"),
+            # 属性付き <ruby>
+            ('<ruby class="highlight">言葉<rt>ことば</rt></ruby>', "ことば"),
+            # 属性付き <rt>
+            ('<ruby>漢字<rt lang="ja">かんじ</rt></ruby>', "かんじ"),
+            # <rb> を含む形式
+            ("<ruby><rb>難読</rb><rt>なんどく</rt></ruby>", "なんどく"),
+            # <rp> を含む形式（フォールバック括弧）
+            ("<ruby>言葉<rp>(</rp><rt>ことば</rt><rp>)</rp></ruby>", "ことば"),
+            # <rt> 内に <span> 等のタグ
+            ("<ruby>漢字<rt><span>かんじ</span></rt></ruby>", "かんじ"),
+            # 複数 <rt>: 音節ごとに分割されたケース
+            ("<ruby>亜<rt>あ</rt>米<rt>め</rt>利<rt>り</rt>加<rt>か</rt></ruby>", "あめりか"),
+            # 大文字タグ
+            ("<RUBY>漢字<RT>かんじ</RT></RUBY>", "かんじ"),
+            # HTML entity
+            ("<ruby>A&amp;B<rt>えー&amp;びー</rt></ruby>", "えー&びー"),
+            # 前後テキストあり
+            ("本文<ruby>漢字<rt>かんじ</rt></ruby>終了", "本文かんじ終了"),
+            # 複数 ruby が同じテキストに
+            (
+                "<ruby>東京<rt>とうきょう</rt></ruby>と<ruby>大阪<rt>おおさか</rt></ruby>",
+                "とうきょうとおおさか",
+            ),
+            # <rt> なし → inner テキストのみ残す
+            ("<ruby>漢字</ruby>", "漢字"),
+            # ruby なし → 変化なし
+            ("普通のテキスト", "普通のテキスト"),
+        ],
+    )
+    def test_expand_ruby(self, src, expected):
+        assert sanitize.expand_ruby(src) == expected
+
+    def test_pipeline_expands_ruby(self):
+        out = sanitize.sanitize("<ruby>漢字<rt>かんじ</rt></ruby>")
+        assert out == "かんじ"
+        assert "<ruby>" not in out
+
+    def test_pipeline_no_rt_strips_tags(self):
+        out = sanitize.sanitize("<ruby>漢字</ruby>")
+        assert "<ruby>" not in out
+        assert "漢字" in out
+
+    def test_unclosed_ruby_not_recovered(self):
+        # 閉じタグ欠落は expand_ruby では復旧しない（remove_html_tags が処理）
+        out = sanitize.sanitize("<ruby>漢字<rt>かんじ</rt>")
+        assert "<ruby>" not in out
+        assert "<rt>" not in out
+
+
 class TestSanitizeCodeAndUrl:
     def test_fenced_code_block_replaced(self):
         text = "前\n```\nfoo()\nbar()\n```\n後"

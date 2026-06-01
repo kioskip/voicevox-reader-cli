@@ -39,6 +39,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 import dependencies as _deps  # noqa: E402
 import hook_install as _hi  # noqa: E402
+import settings as _stg  # noqa: E402
 from lib_git import in_git_repo as _in_git_repo  # noqa: E402 (U-115)
 from lib_http import http_get as _http_get_impl  # noqa: E402 (R-101)
 from lib_prompt import (  # noqa: E402 (U-113 / U-114)
@@ -202,19 +203,21 @@ def _project_settings_path(cwd: Path) -> Path:
     return cwd / "vvread.settings.json"
 
 
-def _update_engine_url_setting(
+def _update_engine_setting(
     cwd: Path,
     new_url: str,
     *,
     dry_run: bool = False,
 ) -> Optional[Path]:
-    """`<cwd>/vvread.settings.json` の `voicevox.engineUrl` を new_url に
+    """`<cwd>/vvread.settings.json` の `voicevox.engines` を [new_url] に
     更新する。既存ファイルが無ければ新規作成。default 値と同じなら no-op。
+    保存時は canonicalize_settings_dict() で engines に統一する。
 
     戻り値: 書き込み実施したら settings_path、no-op (default 一致 or dry_run)
     なら None。
     """
-    if new_url == DEFAULT_ENGINE_URL:
+    normalized_url = new_url.rstrip("/")
+    if normalized_url == DEFAULT_ENGINE_URL.rstrip("/"):
         # default のままなら settings.json に書き込まなくても解決される(R-025)
         return None
 
@@ -235,10 +238,22 @@ def _update_engine_url_setting(
     voicevox = data.setdefault("voicevox", {})
     if not isinstance(voicevox, dict):
         return None
-    if voicevox.get("engineUrl") == new_url:
-        return None  # 既に同じ値、no-op
 
-    voicevox["engineUrl"] = new_url
+    # 既に同じ engines=[normalized_url] で engineUrl なし → no-op
+    current_engines = voicevox.get("engines")
+    if (
+        current_engines == [normalized_url]
+        and "engineUrl" not in voicevox
+    ):
+        return None
+
+    voicevox["engines"] = [normalized_url]
+    voicevox.pop("engineUrl", None)
+
+    try:
+        data = _stg.canonicalize_settings_dict(data)
+    except ValueError:
+        return None
 
     if dry_run:
         return path  # 書込予定パスを返す(実書込みはしない)
@@ -279,14 +294,14 @@ def step_engine(ctx: SetupContext) -> StepResult:
     if "speakers_count" in info:
         detail += f", speakers={info['speakers_count']}"
 
-    written = _update_engine_url_setting(
+    written = _update_engine_setting(
         ctx.cwd, url, dry_run=ctx.dry_run,
     )
     msg = f"connected to VOICEVOX at {url}"
     if written is not None and not ctx.dry_run:
-        msg += f"\n  wrote voicevox.engineUrl to {written}"
+        msg += f"\n  wrote voicevox.engines to {written}"
     elif written is not None and ctx.dry_run:
-        msg += f"\n  [dry-run] would write voicevox.engineUrl to {written}"
+        msg += f"\n  [dry-run] would write voicevox.engines to {written}"
 
     return StepResult(
         step="engine", status=STATUS_OK,

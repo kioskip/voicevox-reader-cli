@@ -50,6 +50,7 @@ def _make_ctx(
     user_setting: bool = False,
     set_pairs: list = None,
     json_patch: str = None,
+    list_mode: bool = False,
 ) -> tuple:
     """ConfigContext + out / err バッファを返す。"""
     out = io.StringIO()
@@ -61,6 +62,7 @@ def _make_ctx(
         user_setting=user_setting,
         set_pairs=set_pairs or [],
         json_patch=json_patch,
+        list_mode=list_mode,
         cwd=tmp_path,
         in_stream=in_stream,
         out_stream=out,
@@ -507,12 +509,15 @@ class TestSetFlag:
         assert _read_settings(path)["voicevox"]["speaker"] == 8
 
     def test_writes_str(self, tmp_path):
+        """--set voicevox.engineUrl → canonicalize で engines 配列に変換される。"""
         path = tmp_path / "vvread.settings.json"
         _write_settings(path, {})
         ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.engineUrl=http://x:50021"])
         rc = cfg.run_config(ctx)
         assert rc == 0
-        assert _read_settings(path)["voicevox"]["engineUrl"] == "http://x:50021"
+        data = _read_settings(path)
+        assert "engineUrl" not in data.get("voicevox", {})
+        assert data["voicevox"]["engines"] == ["http://x:50021"]
 
     def test_no_tty_required(self, tmp_path):
         path = tmp_path / "vvread.settings.json"
@@ -1141,6 +1146,161 @@ class TestClearWithN:
 
 
 # ---------------------------------------------------------------------------
+# U-117: engines 統一テスト
+# ---------------------------------------------------------------------------
+
+
+class TestEnginesUnification:
+    """U-117: vvread config が保存時に engines のみに統一することを検証。"""
+
+    def test_old_engine_url_migrates_to_engines_on_enter(self, tmp_path):
+        """旧 engineUrl のみのファイルを対話で Enter → engines=[A] のみに移行。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"engineUrl": "http://127.0.0.1:50099"}})
+        n = len(cfg.CONFIG_FIELDS)
+        # 全フィールド Enter（維持）+ 確認 Y
+        ctx, out, err = _make_ctx(tmp_path, tty=True, input_text="\n" * n + "Y\n")
+        rc = cfg.run_config(ctx)
+        assert rc == 0, f"err={err.getvalue()}"
+        data = _read_settings(path)
+        assert data["voicevox"]["engines"] == ["http://127.0.0.1:50099"]
+        assert "engineUrl" not in data["voicevox"]
+
+    def test_json_engine_url_converts_to_engines(self, tmp_path):
+        """--json で engineUrl を指定 → canonicalize で engines に変換される。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(
+            tmp_path,
+            json_patch='{"voicevox":{"engineUrl":"http://127.0.0.1:50099"}}',
+        )
+        rc = cfg.run_config(ctx)
+        assert rc == 0, f"err={err.getvalue()}"
+        data = _read_settings(path)
+        assert data["voicevox"]["engines"] == ["http://127.0.0.1:50099"]
+        assert "engineUrl" not in data["voicevox"]
+
+    def test_engines_and_engine_url_coexist_engines_wins(self, tmp_path):
+        """既存ファイルに engineUrl + engines 両方 → engines 優先、engineUrl 削除。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {
+            "engineUrl": "http://old:50021",
+            "engines": ["http://new:50021", "http://new2:50022"],
+        }})
+        # 対話で Enter のみ（変更なし）
+        n = len(cfg.CONFIG_FIELDS)
+        ctx, out, err = _make_ctx(tmp_path, tty=True, input_text="\n" * n + "Y\n")
+        rc = cfg.run_config(ctx)
+        assert rc == 0, f"err={err.getvalue()}"
+        data = _read_settings(path)
+        assert data["voicevox"]["engines"] == ["http://new:50021", "http://new2:50022"]
+        assert "engineUrl" not in data["voicevox"]
+
+    def test_interactive_comma_separated_input(self, tmp_path):
+        """対話でカンマ区切り URL 入力 → engines 配列に変換される。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {}})
+        n = len(cfg.CONFIG_FIELDS)
+        # 1フィールド目(engines)にカンマ区切り入力、残りは Enter、確認 Y
+        input_text = "http://127.0.0.1:50021, http://127.0.0.1:50022\n" + "\n" * (n - 1) + "Y\n"
+        ctx, out, err = _make_ctx(tmp_path, tty=True, input_text=input_text)
+        rc = cfg.run_config(ctx)
+        assert rc == 0, f"err={err.getvalue()}"
+        data = _read_settings(path)
+        assert data["voicevox"]["engines"] == [
+            "http://127.0.0.1:50021",
+            "http://127.0.0.1:50022",
+        ]
+        assert "engineUrl" not in data["voicevox"]
+
+    def test_interactive_invalid_scheme_reprompts(self, tmp_path):
+        """対話で不正 scheme (ftp://) → 再入力プロンプトが表示される。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {}})
+        n = len(cfg.CONFIG_FIELDS)
+        # 1回目 ftp:// → 再入力, 2回目 正常 → 残り Enter, 確認 Y
+        input_text = "ftp://127.0.0.1:50021\nhttp://127.0.0.1:50021\n" + "\n" * (n - 1) + "Y\n"
+        ctx, out, err = _make_ctx(tmp_path, tty=True, input_text=input_text)
+        rc = cfg.run_config(ctx)
+        assert rc == 0, f"err={err.getvalue()}"
+        assert "ftp://127.0.0.1:50021" in out.getvalue() or "無効" in out.getvalue()
+
+    def test_n_clear_removes_both_engines_and_engine_url(self, tmp_path):
+        """N クリアで voicevox.engines も voicevox.engineUrl も削除される（disk まで通す）。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {
+            "engineUrl": "http://127.0.0.1:50021",
+            "engines": ["http://127.0.0.1:50021"],
+        }})
+        n = len(cfg.CONFIG_FIELDS)
+        # 1フィールド目(engines) を N でクリア、残り Enter、確認 Y
+        input_text = "N\n" + "\n" * (n - 1) + "Y\n"
+        ctx, out, err = _make_ctx(tmp_path, tty=True, input_text=input_text)
+        rc = cfg.run_config(ctx)
+        assert rc == 0, f"err={err.getvalue()}"
+        # JSONC ファイルなので JSONC-aware に読む
+        data, err_msg = cfg._load_vvread_settings(path)
+        assert err_msg is None
+        assert "engines" not in data.get("voicevox", {})
+        assert "engineUrl" not in data.get("voicevox", {})
+
+    def test_n_clear_comment_contains_only_engines_not_engine_url(self, tmp_path):
+        """N クリア時の JSONC コメントは engines のみ。engineUrl はコメントにも現れない。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"engines": ["http://127.0.0.1:50021"]}})
+        n = len(cfg.CONFIG_FIELDS)
+        input_text = "N\n" + "\n" * (n - 1) + "Y\n"
+        ctx, out, err = _make_ctx(tmp_path, tty=True, input_text=input_text)
+        cfg.run_config(ctx)
+        content = path.read_text(encoding="utf-8")
+        assert "engineUrl" not in content
+        assert '// "engines":' in content
+
+    def test_n_clear_engines_file_reparseable(self, tmp_path):
+        """N クリア後のファイルが JSONC として再パースできる（list 型コメント）。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {
+            "engines": ["http://127.0.0.1:50021"],
+            "speaker": 3,
+        }})
+        n = len(cfg.CONFIG_FIELDS)
+        input_text = "N\n" + "\n" * (n - 1) + "Y\n"
+        ctx, out, err = _make_ctx(tmp_path, tty=True, input_text=input_text)
+        cfg.run_config(ctx)
+        data, err_msg = cfg._load_vvread_settings(path)
+        assert err_msg is None, f"再パース失敗: {err_msg}"
+
+    def test_set_engines_shows_error(self, tmp_path):
+        """--set voicevox.engines=... はエラー + --json 案内。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, set_pairs=["voicevox.engines=http://127.0.0.1:50021"])
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+        assert "--json" in err.getvalue()
+
+    def test_json_engines_empty_array_returns_error(self, tmp_path):
+        """--json で engines=[] は canonicalize がエラーを返す。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {})
+        ctx, out, err = _make_ctx(tmp_path, json_patch='{"voicevox":{"engines":[]}}')
+        rc = cfg.run_config(ctx)
+        assert rc == 1
+        assert "ERROR" in err.getvalue()
+
+    def test_list_mode_shows_engines_comma_separated(self, tmp_path):
+        """config --list で voicevox.engines がカンマ区切りで表示される。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"engines": [
+            "http://127.0.0.1:50021", "http://127.0.0.1:50022"
+        ]}})
+        ctx, out, err = _make_ctx(tmp_path, list_mode=True)
+        rc = cfg.run_config(ctx)
+        assert rc == 0
+        assert "http://127.0.0.1:50021, http://127.0.0.1:50022" in out.getvalue()
+
+
+# ---------------------------------------------------------------------------
 # B-124: voicevox.engines の config --json 導線 E2E テスト
 # ---------------------------------------------------------------------------
 
@@ -1152,8 +1312,10 @@ class TestEnginesConfigChain:
 
     def test_json_flag_saves_engines_list(self, tmp_path):
         """config --json で engines 配列が settings ファイルに保存される。"""
-        ctx, out, err = _make_ctx(tmp_path, json_patch=self.ENGINES_JSON, create=True)
-        rc = cfg.run_config(ctx)
+        nonexistent_user = tmp_path / "nonexistent_user.json"
+        with patch.object(cfg._stg, "user_settings_path", return_value=nonexistent_user):
+            ctx, out, err = _make_ctx(tmp_path, json_patch=self.ENGINES_JSON, create=True)
+            rc = cfg.run_config(ctx)
         assert rc == 0, f"err={err.getvalue()}"
 
         path = tmp_path / "vvread.settings.json"
@@ -1165,9 +1327,11 @@ class TestEnginesConfigChain:
 
     def test_json_flag_dry_run_shows_diff(self, tmp_path):
         """config --json --dry-run が差分を表示するだけで保存しない。"""
-        ctx, out, err = _make_ctx(tmp_path, json_patch=self.ENGINES_JSON,
-                                  dry_run=True, create=True)
-        rc = cfg.run_config(ctx)
+        nonexistent_user = tmp_path / "nonexistent_user.json"
+        with patch.object(cfg._stg, "user_settings_path", return_value=nonexistent_user):
+            ctx, out, err = _make_ctx(tmp_path, json_patch=self.ENGINES_JSON,
+                                      dry_run=True, create=True)
+            rc = cfg.run_config(ctx)
         assert rc == 0, f"err={err.getvalue()}"
 
         path = tmp_path / "vvread.settings.json"
@@ -1177,11 +1341,12 @@ class TestEnginesConfigChain:
         """config --json で保存した engines を settings.py がリストとして解決する。"""
         import settings as stg
 
-        # config.py --json 相当の書き込み
-        ctx, _, _ = _make_ctx(tmp_path, json_patch=self.ENGINES_JSON, create=True)
-        cfg.run_config(ctx)
+        nonexistent_user = tmp_path / "nonexistent_user.json"
+        with patch.object(cfg._stg, "user_settings_path", return_value=nonexistent_user):
+            ctx, _, _ = _make_ctx(tmp_path, json_patch=self.ENGINES_JSON, create=True)
+            cfg.run_config(ctx)
 
-        s = stg.load(cwd=tmp_path, env={})
+        s = stg.load(cwd=tmp_path, env={}, user_path=nonexistent_user)
         rv = s.get("voicevox.engines")
         assert rv is not None
         assert rv.value == ["http://127.0.0.1:50021", "http://127.0.0.1:50022"]
