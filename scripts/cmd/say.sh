@@ -69,9 +69,17 @@ source "${VVREAD_SCRIPTS_DIR}/lib/say_args.sh"
 # shellcheck source=../lib/say_pipeline.sh
 source "${VVREAD_SCRIPTS_DIR}/lib/say_pipeline.sh"
 
+# キャッシュ TTL 自動削除 (T-013)
+# shellcheck source=../lib/cache_cleanup.sh
+source "${VVREAD_SCRIPTS_DIR}/lib/cache_cleanup.sh"
+
 # ===== 引数パース =====
 
 vvread_say_parse_args "$@"
+
+# ===== キャッシュ TTL クリーンアップ（バックグラウンド）=====
+# 引数パース成功後のみここに到達する（不正引数時は say_args.sh が exit する）
+_vvread_cache_cleanup_if_due
 
 # ===== エンジン配列 =====
 # VOICEVOX_ENGINES は settings.py env で ';' 区切りで解決済み。
@@ -126,6 +134,10 @@ vvread_kill_play "${PID_FILE}"
 # 新しい session token を発行(lib/session.sh)
 SESSION_ID=$(vvread_session_start "${SESSION_FILE}")
 
+CACHE_HIT_FILE="${STATE_DIR}/cache_hits_${SESSION_ID}_$$.tmp"
+: > "${CACHE_HIT_FILE}"
+export VVREAD_CACHE_HIT_FILE="${CACHE_HIT_FILE}"
+
 # 各 chunk の wav を入れる prefix
 WAV_PREFIX="${STATE_DIR}/voice_${SESSION_ID}"
 
@@ -145,6 +157,7 @@ _vvread_say_cleanup() {
     done
   fi
   rm -f "${WAV_PREFIX}"_* 2>/dev/null || true
+  rm -f "${CACHE_HIT_FILE:-}" 2>/dev/null || true
 }
 trap _vvread_say_cleanup EXIT
 
@@ -235,6 +248,16 @@ while [ "${i}" -lt "${CHUNK_TOTAL}" ]; do
 
   i=$((i + 1))
 done
+
+_cache_hits=0
+if [ -s "${CACHE_HIT_FILE:-}" ]; then
+  _cache_hits=$(
+    sort -u "${CACHE_HIT_FILE}" 2>/dev/null |
+      wc -l |
+      tr -d ' '
+  )
+fi
+log_info "say cache_summary hits=${_cache_hits}/${CHUNK_TOTAL} session=${SESSION_ID}"
 
 log_info "say done chunks=${CHUNK_TOTAL} session=${SESSION_ID}"
 exit 0

@@ -18,6 +18,7 @@ def _path_env(tmp_path: Path) -> dict:
         "VVREAD_STATE_DIR": str(tmp_path / "state"),
         "VVREAD_LOG_DIR": str(tmp_path / "log"),
         "VVREAD_CACHE_DIR": str(tmp_path / "cache"),
+        "VVREAD_PROJECT_SETTINGS": str(tmp_path / "no-project-settings.json"),
     }
 
 

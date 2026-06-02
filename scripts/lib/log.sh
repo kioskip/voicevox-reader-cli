@@ -67,5 +67,6 @@ _log_write() {
   printf '[%s.%s] %s.%-5s [%d]: %s\n' "${ts}" "${ms3}" "${LOG_NAME}" "${lvl}" "$$" "$*" >> "${LOG_FILE}"
 }
 
+log_warn()  { _log_write 1 "WARN"  "$@"; }
 log_info()  { _log_write 1 "INFO"  "$@"; }
 log_debug() { _log_write 2 "DEBUG" "$@"; }

@@ -36,6 +36,7 @@ def _path_env(tmp_path: Path) -> dict:
         "VVREAD_STATE_DIR": str(tmp_path / "state"),
         "VVREAD_LOG_DIR": str(tmp_path / "log"),
         "VVREAD_CACHE_DIR": str(tmp_path / "cache"),
+        "VVREAD_PROJECT_SETTINGS": str(tmp_path / "no-project-settings.json"),
     }
 
 
@@ -121,8 +122,8 @@ def _say_env(tmp_path: Path, voicevox_url: str, bin_dir: Path,
     PATH + VVREAD_PLAYER)"""
     env = _path_env(tmp_path)
     env["VOICEVOX_ENGINE"] = voicevox_url
-    # v0.3.0 以降、say.sh は VOICEVOX_ENGINES を優先する。project settings の
-    # voicevox.engines[] が settings.py env 経由で漏れ込まないよう明示上書き。
+    # v0.3.0 以降 say.sh は VOICEVOX_ENGINES を優先する。フェイクエンジンを指すために明示設定。
+    # R-115 以降は VVREAD_PROJECT_SETTINGS で settings 漏れは隔離済み。
     env["VOICEVOX_ENGINES"] = voicevox_url
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
     env["VVREAD_PLAYER"] = player
@@ -872,3 +873,202 @@ class TestOrchestration:
         state_dir = tmp_path / "state"
         leftover_wavs = list(state_dir.glob("voice_*_*.wav"))
         assert leftover_wavs == [], f"cleanup が wav 削除を引き継げていない: {leftover_wavs}"
+
+
+# ---------------------------------------------------------------------------
+# U-118: cache_hit INFO ログ + セッション統計サマリー
+# ---------------------------------------------------------------------------
+
+
+class TestCacheHitLogging:
+    """U-118: cache hit 時の INFO ログと cache_summary のテスト。"""
+
+    @staticmethod
+    def _compute_cache_key(text: str, speaker: str = "3") -> str:
+        """settings.py 経由の合成パラメータを加味してキャッシュキーを計算する。
+        say.sh と同じ設定パラメータ（VOICEVOX_SPEED 等）を使う必要がある。
+        R-115: _say_env と同様に project settings を隔離して defaults のみ使う。"""
+        base_env = _clean_env()
+        # _say_env が VVREAD_PROJECT_SETTINGS で project settings を隔離するのと合わせる
+        base_env["VVREAD_PROJECT_SETTINGS"] = str(REPO / "no-project-settings.json")
+        sp = subprocess.run(
+            ["python3", str(REPO / "scripts" / "settings.py"), "env"],
+            capture_output=True, text=True, env=base_env,
+        )
+        env = dict(base_env)
+        for line in sp.stdout.splitlines():
+            if line.startswith("export "):
+                kv = line[7:]
+                k, _, v = kv.partition("=")
+                env[k.strip()] = v.strip("'\"")
+        r = subprocess.run(
+            ["python3", str(REPO / "scripts" / "cache_key.py"), "--speaker", speaker],
+            input=text, capture_output=True, text=True, env=env,
+        )
+        return r.stdout.strip()
+
+    @staticmethod
+    def _read_log(tmp_path: Path) -> str:
+        log_file = tmp_path / "log" / "speak.log"
+        return log_file.read_text() if log_file.exists() else ""
+
+    @staticmethod
+    def _place_cached_wav(cache_dir: Path, key: str) -> Path:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        wav = cache_dir / f"{key}.wav"
+        wav.write_bytes(b"\x00" * 44)
+        return wav
+
+    def test_cache_hit_logs_info_and_summary(self, tmp_path):
+        """cache hit 時に INFO で cache_hit と cache_summary hits=1/1 が speak.log に出る。"""
+        text = "了解。"
+        speaker = "3"
+        cache_dir = tmp_path / "cache"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        key = self._compute_cache_key(text, speaker)
+        if not key:
+            pytest.skip("cache_key.py returned empty (text not cacheable)")
+        self._place_cached_wav(cache_dir, key)
+
+        env = _say_env(tmp_path, "http://127.0.0.1:59999", bin_dir)
+        r = run_say(text, "--speaker", speaker, env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        log = self._read_log(tmp_path)
+        assert "say cache_hit chunk=1/1" in log
+        assert "say cache_summary hits=1/1" in log
+
+    def test_cache_miss_logs_zero_summary(self, voicevox_mock, tmp_path):
+        """cache miss 時は hits=0/N が summary に出る（cache_hit 行なし）。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_say("了解。", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        log = self._read_log(tmp_path)
+        assert "say cache_summary hits=0/" in log
+        assert "say cache_hit chunk=" not in log
+
+    def test_cache_hit_updates_mtime(self, tmp_path):
+        """cache hit 後に対象 wav の mtime が更新される（T-013 の TTL 管理用）。"""
+        import time as time_mod
+
+        text = "了解。"
+        speaker = "3"
+        cache_dir = tmp_path / "cache"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        key = self._compute_cache_key(text, speaker)
+        if not key:
+            pytest.skip("cache_key.py returned empty (text not cacheable)")
+        wav = self._place_cached_wav(cache_dir, key)
+
+        # 1 時間前の mtime を設定してから hit させる（1 秒分解能の問題を回避）
+        past = time_mod.time() - 3600
+        os.utime(wav, (past, past))
+        mtime_before = wav.stat().st_mtime
+
+        env = _say_env(tmp_path, "http://127.0.0.1:59999", bin_dir)
+        r = run_say(text, "--speaker", speaker, env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        mtime_after = wav.stat().st_mtime
+        assert mtime_after > mtime_before, "cache hit 後に mtime が更新されるべき"
+
+    def test_cache_tmp_cleaned_after_normal_exit(self, voicevox_mock, tmp_path):
+        """正常終了後に cache_hits_*.tmp が STATE_DIR に残らない。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_say("テスト", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        state_dir = tmp_path / "state"
+        leftover = list(state_dir.glob("cache_hits_*.tmp"))
+        assert leftover == [], f"残存 tmp: {leftover}"
+
+    def test_cache_tmp_cleaned_after_synth_failure(self, voicevox_mock, tmp_path):
+        """synth 失敗時も EXIT trap が cache_hits_*.tmp を削除する。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        voicevox_mock["state"].fail_synthesis = True
+
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_say("テスト", env_extra=env)
+        assert r.returncode == 1
+
+        state_dir = tmp_path / "state"
+        leftover = list(state_dir.glob("cache_hits_*.tmp"))
+        assert leftover == [], f"残存 tmp: {leftover}"
+
+    def test_cache_hit_no_double_log_in_debug_mode(self, tmp_path):
+        """VOICEVOX_LOG_LEVEL=DEBUG でも cache_hit chunk の INFO 行は 1 件のみ。"""
+        text = "了解。"
+        speaker = "3"
+        cache_dir = tmp_path / "cache"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        key = self._compute_cache_key(text, speaker)
+        if not key:
+            pytest.skip("cache_key.py returned empty (text not cacheable)")
+        self._place_cached_wav(cache_dir, key)
+
+        env = _say_env(tmp_path, "http://127.0.0.1:59999", bin_dir)
+        env["VOICEVOX_LOG_LEVEL"] = "DEBUG"
+
+        r = run_say(text, "--speaker", speaker, env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        log = self._read_log(tmp_path)
+        # "cache_hit chunk" にアンカー（"cache_hit_detail" は別行）
+        hit_lines = [ln for ln in log.splitlines() if "cache_hit chunk" in ln]
+        assert len(hit_lines) == 1, f"INFO cache_hit chunk は 1 件のみのはず: {hit_lines}"
+
+    def test_cache_copy_fail_logs_warn_and_falls_back_to_synth(
+        self, voicevox_mock, tmp_path
+    ):
+        """CACHE_DIR に読み取り不可な wav があっても WARN を出して synth にフォールバックする。"""
+        if os.getuid() == 0:
+            pytest.skip("root では chmod 000 が無効")
+
+        text = "了解。"
+        speaker = "3"
+        cache_dir = tmp_path / "cache"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        key = self._compute_cache_key(text, speaker)
+        if not key:
+            pytest.skip("cache_key.py returned empty (text not cacheable)")
+        wav = self._place_cached_wav(cache_dir, key)
+        wav.chmod(0o000)
+
+        try:
+            env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+            r = run_say(text, "--speaker", speaker, env_extra=env)
+            assert r.returncode == 0, f"stderr={r.stderr}"
+
+            log = self._read_log(tmp_path)
+            assert "cache_copy_fail" in log
+            assert "WARN" in log
+            n_synth = sum(
+                1 for req in voicevox_mock["state"].requests
+                if "/synthesis" in req["path"]
+            )
+            assert n_synth >= 1
+        finally:
+            wav.chmod(0o644)

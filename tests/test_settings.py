@@ -466,6 +466,43 @@ class TestCliEnv:
         assert r.returncode == 0
         assert r.stdout.strip() == "123"
 
+    def test_env_project_settings_env_var_overrides_cwd(self, tmp_path):
+        """VVREAD_PROJECT_SETTINGS env var が cwd/vvread.settings.json より優先される (R-115)"""
+        # cwd に speaker=77 を設定
+        cwd_proj = tmp_path / "vvread.settings.json"
+        cwd_proj.write_text('{"voicevox": {"speaker": 77}}', encoding="utf-8")
+        # 別ディレクトリに speaker=88 を設定
+        alt_dir = tmp_path / "alt"
+        alt_dir.mkdir()
+        alt_proj = alt_dir / "vvread.settings.json"
+        alt_proj.write_text('{"voicevox": {"speaker": 88}}', encoding="utf-8")
+
+        r = _run_cli("env", env={"VVREAD_PROJECT_SETTINGS": str(alt_proj)}, cwd=str(tmp_path))
+        assert r.returncode == 0
+        assert "VOICEVOX_SPEAKER='88'" in r.stdout, "VVREAD_PROJECT_SETTINGS が cwd の設定より優先されていない"
+
+    def test_env_project_settings_cli_arg_overrides_env_var(self, tmp_path):
+        """--project-settings CLI arg が VVREAD_PROJECT_SETTINGS env var より優先される (R-115)"""
+        env_proj = tmp_path / "from_env.json"
+        env_proj.write_text('{"voicevox": {"speaker": 55}}', encoding="utf-8")
+        cli_proj = tmp_path / "from_cli.json"
+        cli_proj.write_text('{"voicevox": {"speaker": 66}}', encoding="utf-8")
+
+        r = _run_cli(
+            "env", "--project-settings", str(cli_proj),
+            env={"VVREAD_PROJECT_SETTINGS": str(env_proj)},
+            cwd=str(tmp_path),
+        )
+        assert r.returncode == 0
+        assert "VOICEVOX_SPEAKER='66'" in r.stdout, "--project-settings が VVREAD_PROJECT_SETTINGS より優先されていない"
+
+    def test_env_nonexistent_project_settings_falls_back_to_default(self, tmp_path):
+        """存在しないパスを VVREAD_PROJECT_SETTINGS に渡してもエラーなく default へ fallback (R-115)"""
+        nonexistent = tmp_path / "no-such-file.json"
+        r = _run_cli("env", env={"VVREAD_PROJECT_SETTINGS": str(nonexistent)}, cwd=str(tmp_path))
+        assert r.returncode == 0
+        assert "VOICEVOX_SPEAKER='3'" in r.stdout, "存在しないパスの場合 default (3) にならない"
+
 
 class TestChunkingSchema:
     """R-036: settings.json に追加した chunking 系 3 キーのテスト"""

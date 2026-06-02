@@ -98,6 +98,19 @@
     "maxBytes": 10485760
   },
 
+  // === Cache TTL auto-cleanup (T-013) ===
+  "cache": {
+    // TTL in days. Wavs not accessed for this many days are deleted automatically
+    // on each `vvread say` invocation (background). 0 = disabled (default).
+    // Override with env: VVREAD_CACHE_TTL_DAYS
+    "ttlDays": 0,
+
+    // Interval in hours between cleanup checks. 0 = check on every `vvread say`.
+    // Default: 24
+    // Override with env: VVREAD_CACHE_CLEANUP_INTERVAL_HOURS
+    "cleanupIntervalHours": 24
+  },
+
   // === Notifications ===
   "notify": {
     // Minimum interval (seconds) between failure notifications.
