@@ -17,6 +17,19 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.3.2] - 2026-06-02
+
+### Added
+- wav キャッシュ TTL 自動削除。`vvread say` 起動時、`VVREAD_CACHE_TTL_DAYS` で設定した日数を超えた未使用 wav をバックグラウンドで自動削除する。`VVREAD_CACHE_CLEANUP_INTERVAL_HOURS` で実行間隔を制御（デフォルト 24h）。削除件数を INFO ログに出力。
+- キャッシュヒット INFO ログ昇格。`synth` が wav キャッシュを使用した際 `say cache_hit chunk=N/M` を INFO レベルで記録するようになった。`vvread say` 終了時にセッション統計サマリー（`say cache_summary hits=N/M session=...`）を INFO ログに出力。
+### Changed
+- `settings.py env` に `VVREAD_PROJECT_SETTINGS` 環境変数サポートを追加。指定パスのファイルを project settings として使用（存在しない場合は user/default にフォールバック）。`--project-settings` CLI arg も追加。
+### Fixed
+- `cache_cleanup.lock` が `kill -9` 等でプロセス強制終了時に残存した場合、次回 `vvread say` 起動時に自動除去して cleanup を再開するようになった（stale ロック自動除去）。
+- `cache_cleanup.sh` の削除ログ精度改善。ログキーを `candidates=` から `deleted=` に変更し、実削除成功数を正確に記録するようになった。
+
+---
+
 ## [0.3.1] - 2026-06-01
 
 ### Added

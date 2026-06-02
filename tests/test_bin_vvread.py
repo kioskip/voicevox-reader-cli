@@ -13,6 +13,7 @@ status/clean)は voice.sh への exec 委譲なので、stub と委譲の両系�
 """
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ def _path_env(tmp_path: Path) -> dict:
         "VVREAD_STATE_DIR": str(tmp_path / "state"),
         "VVREAD_LOG_DIR": str(tmp_path / "log"),
         "VVREAD_CACHE_DIR": str(tmp_path / "cache"),
+        "VVREAD_PROJECT_SETTINGS": str(tmp_path / "no-project-settings.json"),
     }
 
 
@@ -164,6 +166,211 @@ class TestVoiceControlDispatch:
         r = run_vvread("clean", env_extra=_path_env(tmp_path))
         assert r.returncode == 0, f"stderr={r.stderr}"
         assert "nothing to clean" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# キャッシュ TTL 自動削除 (T-013)
+# ---------------------------------------------------------------------------
+
+
+class TestCacheTtlCleanup:
+    def _say_env(self, tmp_path: Path) -> dict:
+        """TTL テスト用の最小 env。
+        合成エンジンへの接続は試みるが、cleanup は say.sh arg parse 成功後に
+        バックグラウンドで実行されるため合成失敗に関わらず動作する。"""
+        env = _path_env(tmp_path)
+        env["VOICEVOX_ENGINE_URL"] = "http://127.0.0.1:1"
+        env["VOICEVOX_ENGINES"] = "http://127.0.0.1:1"
+        return env
+
+    def test_old_wav_deleted_on_say(self, tmp_path):
+        """VVREAD_CACHE_TTL_DAYS=1 のとき 2 日前の wav が vvread say 起動時に削除される。
+        cleanup は arg parse 成功後にバックグラウンド実行されるため、
+        合成の成否（returncode）に関わらず削除が行われる。"""
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        old_wav = cache_dir / "spk3_old_aabbccdd.wav"
+        new_wav = cache_dir / "spk3_new_eeff0011.wav"
+        old_wav.write_bytes(b"old")
+        new_wav.write_bytes(b"new")
+
+        old_time = time.time() - 2 * 86400
+        os.utime(old_wav, (old_time, old_time))
+
+        env = {
+            **self._say_env(tmp_path),
+            "VVREAD_CACHE_TTL_DAYS": "1",
+            "VVREAD_CACHE_CLEANUP_INTERVAL_HOURS": "0",
+        }
+        # 非空テキストで arg parse を通過させる（合成は失敗するが cleanup は実行される）
+        run_vvread("say", "テスト", env_extra=env)
+
+        deadline = time.time() + 3.0
+        while old_wav.exists() and time.time() < deadline:
+            time.sleep(0.05)
+
+        assert not old_wav.exists(), "2日前の wav が削除されていない"
+        assert new_wav.exists(), "新しい wav が誤って削除された"
+
+    def test_new_wav_not_deleted(self, tmp_path):
+        """TTL_DAYS=1 でも直近の wav は削除されない"""
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        recent_wav = cache_dir / "spk3_recent_aabbccdd.wav"
+        recent_wav.write_bytes(b"recent")
+
+        env = {
+            **self._say_env(tmp_path),
+            "VVREAD_CACHE_TTL_DAYS": "1",
+            "VVREAD_CACHE_CLEANUP_INTERVAL_HOURS": "0",
+        }
+        run_vvread("say", "テスト", env_extra=env)
+        time.sleep(0.5)
+
+        assert recent_wav.exists(), "直近の wav が誤って削除された"
+
+    def test_ttl_zero_disables_cleanup(self, tmp_path):
+        """VVREAD_CACHE_TTL_DAYS=0（デフォルト）のとき古い wav も削除されない"""
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        old_wav = cache_dir / "spk3_old_aabbccdd.wav"
+        old_wav.write_bytes(b"old")
+        old_time = time.time() - 30 * 86400
+        os.utime(old_wav, (old_time, old_time))
+
+        env = {**self._say_env(tmp_path), "VVREAD_CACHE_TTL_DAYS": "0"}
+        run_vvread("say", "テスト", env_extra=env)
+        time.sleep(0.5)
+
+        assert old_wav.exists(), "TTL=0 なのに wav が削除された"
+
+    def test_invalid_ttl_value_does_not_crash(self, tmp_path):
+        """VVREAD_CACHE_TTL_DAYS に非数値を渡しても say.sh が exit 127 にならない"""
+        env = {**self._say_env(tmp_path), "VVREAD_CACHE_TTL_DAYS": "abc"}
+        r = run_vvread("say", "テスト", env_extra=env)
+        # 合成エラー(1) は想定内。bash "command not found"(127) でないことを確認する。
+        assert r.returncode != 127, f"bash クラッシュ (exit 127): stderr={r.stderr}"
+
+    def test_interval_suppresses_second_cleanup(self, tmp_path):
+        """INTERVAL_HOURS=1 のとき、1 回目 cleanup 後に 2 回目が抑止される"""
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+
+        old_wav = cache_dir / "spk3_old_aabbccdd.wav"
+        old_wav.write_bytes(b"old")
+        old_time = time.time() - 2 * 86400
+        os.utime(old_wav, (old_time, old_time))
+
+        env = {
+            **self._say_env(tmp_path),
+            "VVREAD_CACHE_TTL_DAYS": "1",
+            "VVREAD_CACHE_CLEANUP_INTERVAL_HOURS": "1",
+        }
+        # 1 回目: cleanup 実行 → last_file が作られる
+        run_vvread("say", "テスト", env_extra=env)
+        deadline = time.time() + 3.0
+        while old_wav.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        assert not old_wav.exists(), "1回目のcleanupで削除されなかった"
+
+        # 古い wav を再作成
+        old_wav.write_bytes(b"old2")
+        os.utime(old_wav, (old_time, old_time))
+
+        # 2 回目: interval 内なので cleanup は実行されない
+        run_vvread("say", "テスト", env_extra=env)
+        time.sleep(0.5)
+        assert old_wav.exists(), "interval 内なのに 2 回目のcleanupが実行された"
+
+    def test_deleted_count_in_log(self, tmp_path):
+        """R-116: 実削除数が deleted=N としてログに記録され candidates= は出ない"""
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        old_time = time.time() - 2 * 86400
+        for i in range(3):
+            w = cache_dir / f"spk3_old_{i:08x}.wav"
+            w.write_bytes(b"x")
+            os.utime(w, (old_time, old_time))
+
+        env = {
+            **self._say_env(tmp_path),
+            "VVREAD_CACHE_TTL_DAYS": "1",
+            "VVREAD_CACHE_CLEANUP_INTERVAL_HOURS": "0",
+        }
+        run_vvread("say", "テスト", env_extra=env)
+
+        log_file = tmp_path / "log" / "speak.log"
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if log_file.exists() and "deleted=3" in log_file.read_text():
+                break
+            time.sleep(0.05)
+
+        content = log_file.read_text() if log_file.exists() else ""
+        assert "deleted=3" in content, f"deleted=3 がログに見つからない: {content[-500:]}"
+        assert "candidates=" not in content, "candidates= が残っている"
+
+    def test_stale_lock_is_cleared(self, tmp_path):
+        """U-119: 死亡 PID のロックを stale とみなして自動除去し cleanup が実行される"""
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        old_wav = cache_dir / "spk3_stale_aabbccdd.wav"
+        old_wav.write_bytes(b"old")
+        old_time = time.time() - 2 * 86400
+        os.utime(old_wav, (old_time, old_time))
+
+        # stale ロックを作成（存在しない PID を埋め込む）
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        lock_dir = state_dir / "cache_cleanup.lock"
+        lock_dir.mkdir()
+        (lock_dir / "pid").write_text("99999999\n")
+
+        env = {
+            **self._say_env(tmp_path),
+            "VVREAD_CACHE_TTL_DAYS": "1",
+            "VVREAD_CACHE_CLEANUP_INTERVAL_HOURS": "0",
+        }
+        run_vvread("say", "テスト", env_extra=env)
+
+        deadline = time.time() + 3.0
+        while old_wav.exists() and time.time() < deadline:
+            time.sleep(0.05)
+
+        assert not old_wav.exists(), "stale ロック除去後に cleanup が実行されなかった"
+        assert not lock_dir.exists(), "cleanup 後もロックが残った"
+
+    def test_live_lock_is_respected(self, tmp_path):
+        """U-119: 生存中の PID のロックは stale とみなさず cleanup をスキップする"""
+        import subprocess as sp
+
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        old_wav = cache_dir / "spk3_live_aabbccdd.wav"
+        old_wav.write_bytes(b"old")
+        old_time = time.time() - 2 * 86400
+        os.utime(old_wav, (old_time, old_time))
+
+        sleeper = sp.Popen(["sleep", "10"])
+        try:
+            state_dir = tmp_path / "state"
+            state_dir.mkdir()
+            lock_dir = state_dir / "cache_cleanup.lock"
+            lock_dir.mkdir()
+            (lock_dir / "pid").write_text(f"{sleeper.pid}\n")
+
+            env = {
+                **self._say_env(tmp_path),
+                "VVREAD_CACHE_TTL_DAYS": "1",
+                "VVREAD_CACHE_CLEANUP_INTERVAL_HOURS": "0",
+            }
+            run_vvread("say", "テスト", env_extra=env)
+            time.sleep(0.5)
+
+            assert old_wav.exists(), "生存ロックがあるのに cleanup が実行された"
+        finally:
+            sleeper.terminate()
+            sleeper.wait()
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ def _path_env(tmp_path: Path) -> dict:
         "VVREAD_STATE_DIR": str(tmp_path / "state"),
         "VVREAD_LOG_DIR": str(tmp_path / "log"),
         "VVREAD_CACHE_DIR": str(tmp_path / "cache"),
+        "VVREAD_PROJECT_SETTINGS": str(tmp_path / "no-project-settings.json"),
         "VVREAD_PROJECT_DIR": str(tmp_path),
         "VVREAD_SCRIPTS_DIR": str(REPO / "scripts"),
     }
@@ -121,8 +122,8 @@ def _on_stop_env(tmp_path: Path, voicevox_url: str, bin_dir: Path,
     # S-008: VOICEVOX_ENGINE_URL はベース URL。on_stop 内で /version を付加。
     env["VOICEVOX_ENGINE_URL"] = voicevox_url
     env["VOICEVOX_ENGINE"] = voicevox_url
-    # v0.3.0: on_stop が呼び出す say.sh が VOICEVOX_ENGINES を優先するため
-    # project settings の engines[] が漏れ込まないよう明示上書き。
+    # v0.3.0 以降 say.sh は VOICEVOX_ENGINES を優先する。フェイクエンジンを指すために明示設定。
+    # R-115 以降は VVREAD_PROJECT_SETTINGS で settings 漏れは隔離済み。
     env["VOICEVOX_ENGINES"] = voicevox_url
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
     env["VVREAD_PLAYER"] = player

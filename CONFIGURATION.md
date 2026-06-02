@@ -87,6 +87,8 @@ CLIオプション > 環境変数 > project settings > user settings > default
 |---|---|---|
 | `VVREAD_CACHE_FIRST_CHUNK_RAW` | `true` | `true` の場合、1st chunk をキャッシュキー計算なしで raw テキストのまま wav キャッシュに登録する |
 | `VVREAD_CACHE_FIRST_CHUNK_RAW_MAX_CHARS` | `100` | raw キャッシュを適用する 1st chunk のテキスト文字数上限。超えると通常キャッシュに fallback |
+| `VVREAD_CACHE_TTL_DAYS` | `0`（無効） | 整数。wav キャッシュの TTL（日数）。0 = 自動削除しない。対応設定キー: `cache.ttlDays` |
+| `VVREAD_CACHE_CLEANUP_INTERVAL_HOURS` | `24` | 整数。TTL クリーンアップの実行間隔（時間）。0 = `vvread say` 毎回。対応設定キー: `cache.cleanupIntervalHours` |
 
 ### パス上書き
 

@@ -68,6 +68,9 @@ SCHEMA: Dict[str, Tuple[Any, Optional[str], type]] = {
     "voicevox.chunkHardMax":     (CHUNK_HARD_MAX_DEFAULT,    "VOICEVOX_CHUNK_HARD_MAX",    int),
     "voicevox.inlineCodeLimit":  (INLINE_CODE_LIMIT_DEFAULT, "VOICEVOX_INLINE_CODE_LIMIT", int),
     "voicevox.engines":          (None, "VOICEVOX_ENGINES", list),
+    # キャッシュ TTL 自動削除 (T-013)
+    "cache.ttlDays":              (0,  "VVREAD_CACHE_TTL_DAYS",              int),
+    "cache.cleanupIntervalHours": (24, "VVREAD_CACHE_CLEANUP_INTERVAL_HOURS", int),
     # ログ
     "log.level":            ("INFO",   "VOICEVOX_LOG_LEVEL", str),
     "log.maxBytes":         (10485760, "VOICEVOX_LOG_MAX_BYTES", int),
@@ -377,7 +380,10 @@ def load(
     if user_path is None:
         user_path = user_settings_path()
     if project_path is None:
-        project_path = project_settings_path(cwd)
+        if env.get("VVREAD_PROJECT_SETTINGS"):
+            project_path = Path(env["VVREAD_PROJECT_SETTINGS"])
+        else:
+            project_path = project_settings_path(cwd)
 
     settings = Settings()
 
@@ -529,7 +535,8 @@ def _cmd_get(args: argparse.Namespace) -> int:
 
 
 def _cmd_env(args: argparse.Namespace) -> int:
-    settings = load()
+    project_path = Path(args.project_settings) if args.project_settings else None
+    settings = load(project_path=project_path)
     for key, (default, env_var, _) in SCHEMA.items():
         if not env_var:
             continue
@@ -606,6 +613,11 @@ def main() -> int:
     p_env = sub.add_parser(
         "env",
         help="emit VOICEVOX_*=value lines for bash eval (env > project > user > default)",
+    )
+    p_env.add_argument(
+        "--project-settings",
+        type=str, default=None,
+        help="override project settings file path (e.g., /dev/null to disable)",
     )
     p_env.set_defaults(func=_cmd_env)
 

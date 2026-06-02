@@ -32,6 +32,7 @@ def _path_env(tmp_path: Path) -> dict:
         "VVREAD_STATE_DIR": str(tmp_path / "state"),
         "VVREAD_LOG_DIR": str(tmp_path / "log"),
         "VVREAD_CACHE_DIR": str(tmp_path / "cache"),
+        "VVREAD_PROJECT_SETTINGS": str(tmp_path / "no-project-settings.json"),
     }
 
 
@@ -245,9 +246,11 @@ class TestSettingsIntegration:
         env = _path_env(tmp_path)
         env["HOME"] = str(tmp_path / "home")
         # cwd の vvread.settings.json に不明キーを置く
-        (tmp_path / "vvread.settings.json").write_text(
-            json.dumps({"future": {"new_thing": 1}})
-        )
+        settings_file = tmp_path / "vvread.settings.json"
+        settings_file.write_text(json.dumps({"future": {"new_thing": 1}}))
+        # _path_env では VVREAD_PROJECT_SETTINGS が non-existent に設定されるため、
+        # このテストではテスト用の settings ファイルを明示的に指定する（R-115）
+        env["VVREAD_PROJECT_SETTINGS"] = str(settings_file)
         r = run_doctor("--offline", env_extra=env, cwd=tmp_path)
         assert r.returncode == 0
         assert "unknown_key" in r.stdout

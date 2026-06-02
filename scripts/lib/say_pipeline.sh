@@ -45,10 +45,18 @@ vvread_say_synth_chunk() {
     local cache_wav="${CACHE_DIR}/${cache_key}.wav"
     if [ -f "${cache_wav}" ]; then
       if cp "${cache_wav}" "${wav}" 2>/dev/null; then
-        log_debug "say cache_hit chunk=$((idx + 1))/${chunk_total} key=${cache_key}"
+        touch "${cache_wav}" 2>/dev/null || true
+        log_info  "say cache_hit chunk=$((idx + 1))/${chunk_total}"
+        log_debug "say cache_hit_detail chunk=$((idx + 1))/${chunk_total} key=${cache_key}"
+        # Multiple workers may append concurrently.
+        # Each record is a short chunk index; sort -u is used when summarizing.
+        if [ -n "${VVREAD_CACHE_HIT_FILE:-}" ]; then
+          printf '%s\n' "${idx}" >> "${VVREAD_CACHE_HIT_FILE}" 2>/dev/null || true
+        fi
         return 0
       fi
-      log_debug "say cache_copy_fail chunk=$((idx + 1))/${chunk_total} key=${cache_key} fallback to synth"
+      log_warn  "say cache_copy_fail chunk=$((idx + 1))/${chunk_total}"
+      log_debug "say cache_copy_fail_detail chunk=$((idx + 1))/${chunk_total} key=${cache_key}"
     fi
   fi
 
