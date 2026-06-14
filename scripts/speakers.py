@@ -58,6 +58,37 @@ def _fetch_speakers(
     return data, None
 
 
+def _speakers_dto(speakers: List[Any]) -> List[Dict[str, Any]]:
+    """VOICEVOX /speakers レスポンスを安定 DTO に変換。
+
+    戻り値: [{"name": str, "styles": [{"id": int, "name": str}]}]
+    top-level が list でない場合は呼び出し元が RuntimeError に変換する。
+    list 内の不正要素はスキップして継続する。
+    """
+    result: List[Dict[str, Any]] = []
+    for sp in speakers:
+        if not isinstance(sp, dict):
+            continue
+        name = sp.get("name")
+        styles = sp.get("styles")
+        if not isinstance(name, str) or not name:
+            continue
+        if not isinstance(styles, list):
+            continue
+        valid_styles: List[Dict[str, Any]] = []
+        for st in styles:
+            if not isinstance(st, dict):
+                continue
+            st_id = st.get("id")
+            st_name = st.get("name")
+            if not isinstance(st_id, int) or not isinstance(st_name, str):
+                continue
+            valid_styles.append({"id": st_id, "name": st_name})
+        if valid_styles:
+            result.append({"name": name, "styles": valid_styles})
+    return result
+
+
 def _format_speakers(speakers: List[Any]) -> List[str]:
     """VOICEVOX /speakers レスポンスを表示行リストに変換。
 
@@ -69,27 +100,9 @@ def _format_speakers(speakers: List[Any]) -> List[str]:
     - 不正なエントリはスキップ（全体を落とさない）
     """
     lines = []
-    for sp in speakers:
-        if not isinstance(sp, dict):
-            continue
-        name = sp.get("name")
-        styles = sp.get("styles")
-        if not isinstance(name, str) or not name:
-            continue
-        if not isinstance(styles, list):
-            continue
-        style_parts = []
-        for st in styles:
-            if not isinstance(st, dict):
-                continue
-            st_id = st.get("id")
-            st_name = st.get("name")
-            if not isinstance(st_id, int) or not isinstance(st_name, str):
-                continue
-            style_parts.append(f"{st_id}: {st_name}")
-        if not style_parts:
-            continue
-        lines.append(f"{name}: {', '.join(style_parts)}")
+    for sp_item in _speakers_dto(speakers):
+        style_parts = [f"{st['id']}: {st['name']}" for st in sp_item["styles"]]
+        lines.append(f"{sp_item['name']}: {', '.join(style_parts)}")
     return lines
 
 
@@ -101,11 +114,13 @@ def _format_speakers(speakers: List[Any]) -> List[str]:
 def fetch_and_display(
     engine_url: str,
     *,
+    json_mode: bool = False,
     out=None,
     err=None,
 ) -> int:
     """engine_url から話者一覧を取得して表示する。
 
+    json_mode=True のとき stable DTO を JSON で出力し、空配列も正常値として exit 0 を返す。
     戻り値は exit code (0/1)。
     """
     if out is None:
@@ -120,6 +135,10 @@ def fetch_and_display(
             "参考: vvread doctor\n"
         )
         return 1
+
+    if json_mode:
+        out.write(json.dumps(_speakers_dto(speakers), ensure_ascii=False))
+        return 0
 
     lines = _format_speakers(speakers)
     if not lines:
@@ -143,6 +162,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         metavar="URL",
         help="VOICEVOX Engine URL (default: settings から解決)",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="stable DTO を JSON 形式で出力 (MCP tool 向け)",
+    )
     args = parser.parse_args(argv)
 
     engine_url = args.engine_url
@@ -151,7 +175,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         val = loaded.get("voicevox.engineUrl")
         engine_url = val.value if val is not None else "http://127.0.0.1:50021"
 
-    return fetch_and_display(engine_url)
+    return fetch_and_display(engine_url, json_mode=args.json)
 
 
 if __name__ == "__main__":

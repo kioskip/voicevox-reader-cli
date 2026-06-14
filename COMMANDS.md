@@ -49,6 +49,29 @@ vvread play morning.wav
 
 ---
 
+## キュー再生モード
+
+既定は preempt（新しい発話が来たら現再生を止めて即読み上げ）。キュー再生モードを有効にすると、割り込まず順番に積んで再生する。
+
+| コマンド | 説明 |
+|---|---|
+| `vvread queue on` | キュー再生モードを有効化（永続） |
+| `vvread queue off` | 無効化（pending/playing が空のときのみ） |
+| `vvread queue status` | mode / pending / playing / failed の件数 |
+| `vvread queue clear` | pending を削除（再生中は継続） |
+| `vvread queue skip` | 再生中の現エントリのみ停止し次へ |
+| `vvread queue failed list` | 失敗退避エントリの一覧 |
+| `vvread queue failed rm <entry>` | 失敗退避エントリを 1 件削除 |
+| `vvread queue failed clear` | 失敗退避エントリを全削除 |
+| `vvread queue failed cleanup --ttl <dur>` | 失敗時刻が TTL（例 `7d`）超のものを削除（手動実行のみ） |
+| `vvread say --queue <text>` | この発話だけキューに積む |
+| `vvread say --no-queue <text>` | この発話だけ preempt で再生 |
+
+- 停止の粒度: `vvread stop`=全停止（再生停止 + pending 削除） / `queue clear`=pending のみ / `queue skip`=現エントリのみ。
+- MCP Channels 連携時は二重発火（要約 + Stop hook 全文）を防ぐため `vvread queue on` を推奨。
+
+---
+
 ## セットアップ & hook
 
 | コマンド | 説明 |

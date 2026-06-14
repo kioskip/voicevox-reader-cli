@@ -27,3 +27,6 @@ vvread.settings.json
 
 # README の HTML プレビュー(生成ファイル)
 *.html
+
+# Channel server (TypeScript/Bun) の依存パッケージ
+receiver/node_modules/

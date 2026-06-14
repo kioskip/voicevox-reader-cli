@@ -197,6 +197,35 @@ This appends the following to `hooks.Stop[].hooks[]` in `~/.claude/settings.json
 
 **Why `timeout: 600` (seconds)**: long responses (~5,000 characters) can take over five minutes to synthesise and play. Because `async: true` means Claude itself is not waiting, a generous timeout avoids cutoffs.
 
+### 7-2. Register as an MCP server (optional)
+
+> **Note**: MCP integration is an **additional feature**, not a replacement for the Stop hook or CLI.
+> Existing read-aloud functionality works without the `mcp` package.
+
+With MCP integration, Claude Code can read out progress, errors, and completion notifications **during work** — not just at the end of a response. No more watching the screen during long reviews or builds.
+
+Available tools:
+- `vvread_say`: Read text aloud at any point (returns immediately)
+- `vvread_stop`: Stop current playback
+- `vvread_status`: Check playback state
+- `vvread_speakers`: List available speakers
+- `vvread_config_set`: Update voice settings (allowed keys only)
+
+**Install and register**:
+
+```bash
+# 1. Install the mcp package (Python >=3.10 required)
+uv sync --extra mcp
+
+# 2. Register with Claude Code
+claude mcp add --transport stdio --scope local vvread \
+  -- /absolute/path/to/voiceClaude/bin/vvread mcp
+claude mcp list   # should show "vvread"
+```
+
+See **[MCP.en.md](MCP.en.md)** for full usage details.
+For **channel integration** (experimental) — receiving external events (CI completion, monitoring alerts, etc.) by voice — see "Channel Integration" in [MCP.en.md](MCP.en.md).
+
 ---
 
 ## 8. Troubleshooting

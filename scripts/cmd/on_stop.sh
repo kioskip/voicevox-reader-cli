@@ -148,6 +148,8 @@ fi
 # subprocess 起動(exec ではない)で LOG_NAME=on_stop と LOG_NAME=say の境界を
 # 維持。失敗してもサイレントに通過(hook を fail させない)。
 log_info "dispatch_say chars=${#LAST_TEXT}"
-"${VVREAD_SCRIPTS_DIR}/cmd/say.sh" "${LAST_TEXT}" >/dev/null 2>&1 || true
+# source=hook タグを付与（queue モード時の二重発火ポリシーで全文 = canonical 扱い）。
+# marker 更新・eviction・stale 判定は lib/queue.sh::vvread_queue_submit に集約。
+VVREAD_SAY_SOURCE=hook "${VVREAD_SCRIPTS_DIR}/cmd/say.sh" "${LAST_TEXT}" >/dev/null 2>&1 || true
 
 exit 0

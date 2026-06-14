@@ -161,6 +161,19 @@ DEPENDENCIES: List[Dependency] = [
             "uv": "uv pip install --python .venv/bin/python e2k",
         },
     ),
+    Dependency(
+        name="mcp",
+        kind="optional",
+        category="runtime",
+        purpose="MCP サーバー機能 (vvread mcp サブコマンド)。Python >=3.10 が必要。"
+                "通常の vvread say / Stop hook 利用には不要。",
+        check_command=["python3", "-c", "import mcp"],
+        fallback="`vvread mcp` が使用不可。CLI / Stop hook は引き続き利用可能。",
+        install_hint={
+            "uv": "uv sync --extra mcp  # Python >=3.10 required",
+            "pip": "pip install 'mcp>=1,<2'",
+        },
+    ),
     # ---- setup: optional ----
     Dependency(
         name="jq",

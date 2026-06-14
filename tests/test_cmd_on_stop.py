@@ -410,3 +410,35 @@ class TestVvreadDispatch:
         r = run_vvread_on_stop(b"", "-h", env_extra=_path_env(tmp_path))
         assert r.returncode == 1
         assert b"Usage: vvread on-stop" in r.stderr
+
+
+# ---------------------------------------------------------------------------
+# queue source タグ配線 (B-138 WS-B)
+# ---------------------------------------------------------------------------
+
+
+class TestQueueSourceTag:
+    def test_on_stop_tags_source_hook(self, voicevox_mock, tmp_path):
+        """queue モード有効時、on_stop が source=hook で enqueue すること。
+
+        source=hook が vvread_queue_submit に届くと marker (queue_last_hook_ms)
+        が書かれる（hook 分岐のみが marker を更新する）。drain でキューは空に
+        なるが marker は残るので、これを source タグ到達のシグナルに使う。
+        """
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        env = _on_stop_env(tmp_path, voicevox_mock["url"], bin_dir)
+        state = Path(env["VVREAD_STATE_DIR"])
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "queue_mode").write_text("")
+
+        transcript = tmp_path / "t.jsonl"
+        write_transcript(transcript, "フック経由の応答です")
+
+        r = run_on_stop(json.dumps({"transcript_path": str(transcript)}),
+                        env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr!r}"
+        marker = state / "queue" / "queue_last_hook_ms"
+        assert marker.is_file(), "source=hook が queue_submit に届いていない"

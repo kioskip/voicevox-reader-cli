@@ -90,6 +90,14 @@ CLIオプション > 環境変数 > project settings > user settings > default
 | `VVREAD_CACHE_TTL_DAYS` | `0`（無効） | 整数。wav キャッシュの TTL（日数）。0 = 自動削除しない。対応設定キー: `cache.ttlDays` |
 | `VVREAD_CACHE_CLEANUP_INTERVAL_HOURS` | `24` | 整数。TTL クリーンアップの実行間隔（時間）。0 = `vvread say` 毎回。対応設定キー: `cache.cleanupIntervalHours` |
 
+### キュー再生モード
+
+| 変数 | 既定 | 説明 |
+|---|---|---|
+| `VVREAD_SAY_QUEUE` | (未設定) | `1`=この発話を queue / `0`=preempt。優先順位: per-call `--queue`/`--no-queue` > 本変数 > `vvread queue on` フラグ > 既定 preempt |
+| `VVREAD_QUEUE_MAX` | `64` | pending 上限。手動発話は full なら reject、自動通知は最古を drop。1 以上の整数のみ |
+| `VVREAD_QUEUE_FAILED_MAX` | `32` | failed 退避エントリの上限。超過時は退避の瞬間に最古を 1 件自動削除。1 以上の整数のみ |
+
 ### パス上書き
 
 | 変数 | 用途 |

@@ -196,6 +196,7 @@ class ConfigContext:
     dry_run: bool = False
     create: bool = False
     user_setting: bool = False
+    project_scope: bool = False  # True: cwd/vvread.settings.json を強制使用（--user-setting と排他）
     set_pairs: List[str] = field(default_factory=list)
     json_patch: Optional[str] = None
     list_mode: bool = False
@@ -568,6 +569,9 @@ def run_config(ctx: ConfigContext) -> int:
     if non_interactive:
         if ctx.user_setting:
             settings_path = _stg.user_settings_path()
+        elif ctx.project_scope:
+            # --project: user settings にフォールバックせず常に project ファイルを使う
+            settings_path = ctx.cwd / "vvread.settings.json"
         else:
             found = _find_settings_file(ctx.cwd)
             settings_path = found[1] if found is not None else ctx.cwd / "vvread.settings.json"
@@ -701,9 +705,12 @@ def run_config(ctx: ConfigContext) -> int:
     # 旧 engineUrl のみのファイルを engines プロンプトに正しく反映する:
     # flat_current に engines がなく engineUrl がある場合、engines の current として使う
     if "voicevox.engines" not in flat_current and "voicevox.engineUrl" in flat_current:
-        flat_current["voicevox.engines"] = [
-            flat_current["voicevox.engineUrl"].rstrip("/")
-        ]
+        # engineUrl は str / list（engines の legacy alias）どちらもあり得る。
+        # list を直接 .rstrip すると AttributeError になるため list 化して正規化する。
+        _engines_seed, _ = _stg.normalize_engines(
+            _stg.engine_url_to_list(flat_current["voicevox.engineUrl"])
+        )
+        flat_current["voicevox.engines"] = _engines_seed
 
     # 各フィールドを対話編集
     new_flat: Dict[str, Any] = {}
@@ -801,9 +808,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--create", action="store_true",
         help="設定ファイルが存在しない場合は新規作成してから編集を開始（対話モード専用）",
     )
-    parser.add_argument(
+    scope_group = parser.add_mutually_exclusive_group()
+    scope_group.add_argument(
         "--user-setting", action="store_true",
         help="プロジェクト設定の代わりにユーザー設定ファイルを対象にする",
+    )
+    scope_group.add_argument(
+        "--project", action="store_true",
+        help="非対話モード: cwd/vvread.settings.json を強制使用（user settings にフォールバックしない）",
     )
     parser.add_argument(
         "--set", dest="set_pairs", action="append", metavar="KEY=VALUE",
@@ -824,6 +836,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         dry_run=args.dry_run,
         create=args.create,
         user_setting=args.user_setting,
+        project_scope=args.project,
         set_pairs=args.set_pairs or [],
         json_patch=args.json_patch,
         list_mode=args.list_mode,

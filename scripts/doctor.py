@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -723,6 +724,64 @@ def check_vvread() -> List[CheckItem]:
 
 
 # ---------------------------------------------------------------------------
+# section: mcp
+# ---------------------------------------------------------------------------
+
+
+def check_mcp(project_dir: Optional[Path] = None) -> List[CheckItem]:
+    """mcp package の有無と利用可能な Python を確認する。
+
+    通常の doctor では INFO のみ（`vvread mcp` を使わない場合は無問題）。
+    Python 解決順は mcp.sh と同じ:
+      1. VVREAD_MCP_PYTHON 環境変数
+      2. repo/.venv/bin/python
+      3. python3
+    """
+    venv_python = None
+    if project_dir:
+        venv_python = project_dir / ".venv" / "bin" / "python"
+    elif "VVREAD_PROJECT_DIR" in os.environ:
+        venv_python = Path(os.environ["VVREAD_PROJECT_DIR"]) / ".venv" / "bin" / "python"
+
+    candidates: List[Tuple[str, str]] = []  # (label, path)
+    if "VVREAD_MCP_PYTHON" in os.environ:
+        candidates.append(("VVREAD_MCP_PYTHON", os.environ["VVREAD_MCP_PYTHON"]))
+    if venv_python:
+        candidates.append((".venv/bin/python", str(venv_python)))
+    py3 = shutil.which("python3")
+    if py3:
+        candidates.append(("python3", py3))
+
+    for label, py_path in candidates:
+        if not Path(py_path).exists():
+            continue
+        try:
+            result = subprocess.run(
+                [py_path, "-c",
+                 "from importlib.metadata import version; print(version('mcp'))"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                ver = result.stdout.strip()
+                return [CheckItem(
+                    section="mcp",
+                    label="package",
+                    status=STATUS_OK,
+                    detail=f"mcp {ver} ({label}: {py_path})",
+                )]
+        except Exception:
+            pass
+
+    return [CheckItem(
+        section="mcp",
+        label="package",
+        status=STATUS_INFO,
+        detail="mcp package not found (optional: required only for `vvread mcp`)",
+        hint="Install: uv sync --extra mcp  (Python >=3.10 required)",
+    )]
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -766,6 +825,125 @@ def _summarize(items: List[CheckItem]) -> Dict[str, int]:
     return counts
 
 
+# ---------------------------------------------------------------------------
+# section: queue（F-114 wedge / stale mutate 診断）
+# ---------------------------------------------------------------------------
+
+
+def _queue_env_int(name: str, default: int) -> int:
+    try:
+        v = int(os.environ.get(name, ""))
+    except (ValueError, TypeError):
+        return default
+    return v if v >= 1 else default
+
+
+def _queue_read_owner(lockdir: Path) -> Optional[Tuple[str, str]]:
+    """canonical owner（pid<TAB>token）/ legacy pid を読む。なければ None。"""
+    owner = lockdir / "owner"
+    try:
+        if owner.is_file():
+            line = owner.read_text(errors="replace").strip("\n")
+            pid, tok = (line.split("\t", 1) + [""])[:2] if "\t" in line else (line, "")
+            return (pid, tok) if pid else None
+        pidf = lockdir / "pid"
+        if pidf.is_file():
+            pid = pidf.read_text(errors="replace").strip()
+            return (pid, "") if pid else None
+    except OSError:
+        return None
+    return None
+
+
+def _queue_pid_alive(pid: str) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except (ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _queue_lock_age(lockdir: Path, name: str) -> Optional[int]:
+    f = lockdir / name
+    try:
+        if not f.is_file():
+            return None
+        v = int(f.read_text().strip())
+    except (ValueError, OSError):
+        return None
+    return max(0, int(time.time()) - v)
+
+
+def check_queue() -> List[CheckItem]:
+    """queue.lock の wedge / busy / ok 分類 + stale mutate.lock を診断する。"""
+    items: List[CheckItem] = []
+    try:
+        qdir = _paths.state_dir() / "queue"
+    except Exception:  # noqa: BLE001
+        return items
+    if not qdir.is_dir():
+        return items  # queue 未使用なら何も出さない
+
+    def _count(sub: str) -> int:
+        d = qdir / sub
+        if not d.is_dir():
+            return 0
+        return sum(1 for f in d.iterdir()
+                   if f.is_file() and not f.is_symlink() and ".tmp." not in f.name)
+
+    pending = _count("pending")
+    playing = _count("playing")
+    drain_stale = _queue_env_int("VVREAD_QUEUE_DRAIN_STALE_S", 150)
+    mutate_stale = _queue_env_int("VVREAD_QUEUE_MUTATE_STALE_S", 15)
+
+    qlock = qdir / "queue.lock"
+    owner = _queue_read_owner(qlock)
+    drainer_alive = owner is not None and _queue_pid_alive(owner[0])
+
+    if not drainer_alive:
+        items.append(CheckItem(
+            section="queue", label="drainer", status=STATUS_OK,
+            detail=f"no live drainer (pending={pending}, playing={playing})",
+        ))
+    else:
+        prog_age = _queue_lock_age(qlock, "progress")
+        if pending == 0 or (prog_age is not None and prog_age <= drain_stale):
+            items.append(CheckItem(
+                section="queue", label="drainer", status=STATUS_OK,
+                detail=f"ok (pid={owner[0]}, pending={pending}, playing={playing})",
+            ))
+        else:
+            hb_age = _queue_lock_age(qlock, "hb")
+            if hb_age is not None and hb_age > drain_stale:
+                items.append(CheckItem(
+                    section="queue", label="drainer", status=STATUS_WARN,
+                    detail=(f"wedged (pid={owner[0]}, pending={pending}, "
+                            f"no progress > {drain_stale}s)"),
+                    hint="Run `vvread queue reset` to force recovery",
+                ))
+            else:
+                items.append(CheckItem(
+                    section="queue", label="drainer", status=STATUS_INFO,
+                    detail=(f"busy — active playback/synthesis "
+                            f"(pid={owner[0]}, pending={pending})"),
+                ))
+
+    # stale mutate.lock（独立 WARN）
+    mlock = qdir / "queue.mutate.lock"
+    mowner = _queue_read_owner(mlock)
+    if mowner is not None:
+        mage = _queue_lock_age(mlock, "hb")
+        if (not _queue_pid_alive(mowner[0])) or (mage is not None and mage > mutate_stale):
+            items.append(CheckItem(
+                section="queue", label="mutate.lock", status=STATUS_WARN,
+                detail=f"stale (pid={mowner[0]})",
+                hint="Run `vvread queue reset` if playback is stuck",
+            ))
+    return items
+
+
 def collect(*, offline: bool = False, scope: str = "runtime",
             cwd: Optional[Path] = None) -> List[CheckItem]:
     """全セクションを集める。テストから直接呼べるよう main から分離。"""
@@ -792,6 +970,8 @@ def collect(*, offline: bool = False, scope: str = "runtime",
 
     items.extend(check_hooks(cwd=cwd))
     items.extend(check_vvread())
+    items.extend(check_mcp(project_dir=project_dir))
+    items.extend(check_queue())
     return items
 
 

@@ -73,6 +73,10 @@ source "${VVREAD_SCRIPTS_DIR}/lib/say_pipeline.sh"
 # shellcheck source=../lib/cache_cleanup.sh
 source "${VVREAD_SCRIPTS_DIR}/lib/cache_cleanup.sh"
 
+# キュー再生モード (B-015)
+# shellcheck source=../lib/queue.sh
+source "${VVREAD_SCRIPTS_DIR}/lib/queue.sh"
+
 # ===== 引数パース =====
 
 vvread_say_parse_args "$@"
@@ -97,6 +101,217 @@ ENGINE_COUNT="${#ENGINES[@]}"
 # --speaker は最優先(SPEAKER_OVERRIDE が設定されていればそちらを使う)。
 
 SPEAKER=$(voicevox_resolve_speaker "${SPEAKER_OVERRIDE}")
+
+# ===== キュー再生モード分岐（preempt パスより前段・B-015）=====
+#
+# 【最重要】queue 分岐は下段の vvread_kill_play / vvread_session_start より
+# 前に置く。前段を通すと queue モードが自分の drainer を kill し、session
+# 上書きで自殺してサイレント no-op になる。queue パスは preempt パス
+# (QUEUE_MODE=0) を丸ごとバイパスする別モード。preempt パスは一切変更しない。
+
+# queue モード解決（優先順位: per-call > env > STATE_DIR flag > 既定 preempt）
+_vvread_resolve_queue_mode() {
+  case "${QUEUE_OVERRIDE:-}" in
+    on)  echo 1; return 0 ;;
+    off) echo 0; return 0 ;;
+  esac
+  case "${VVREAD_SAY_QUEUE:-}" in
+    1) echo 1; return 0 ;;
+    0) echo 0; return 0 ;;
+    "") ;;
+    *) log_warn "say invalid VVREAD_SAY_QUEUE=${VVREAD_SAY_QUEUE} — falling back to flag" ;;
+  esac
+  if [ -f "${STATE_DIR}/queue_mode" ]; then echo 1; else echo 0; fi
+}
+
+# drain: playing/<entry> を sanitize→chunk→synth→play。
+# 戻り値: 0=完走 / 1=synth 失敗（playing に残し orphan retry へ委ねる）/ 2=halt(stop)
+#         3=skip / 4=lost-lock（queue.lock を回収された。再生せず playing に残し退場）
+_vvread_drain_one_entry() {
+  local entry="$1"
+  local espk etext chunked total idx wav srraw prc
+  espk=$(vvread_queue_entry_field "${entry}" speaker)
+  _queue_is_uint "${espk}" || espk="${SPEAKER}"
+  etext=$(cat "${QDIR}/playing/${entry}" 2>/dev/null || echo "")
+  [ -n "${etext}" ] || return 0
+
+  chunked=$(vvread_chunk_split "${etext}" "${espk}" "${PYTHON}" "${VVREAD_SCRIPTS_DIR}")
+  [ -n "${chunked}" ] || return 0
+  local chunks=()
+  while IFS= read -r line; do
+    [ -n "${line}" ] && chunks+=("${line}")
+  done <<< "${chunked}"
+  total=${#chunks[@]}
+  [ "${total}" -gt 0 ] || return 0
+
+  idx=0
+  while [ "${idx}" -lt "${total}" ]; do
+    # 各 chunk 再生前に halt/skip 判定（自分の token と一致する signal のみ）。
+    # halt(stop) を skip より先に評価（concurrent stop 優先）。
+    if vvread_queue_should_halt "${QDIR}" "${DRAINER_TOKEN}"; then
+      return 2
+    fi
+    if vvread_queue_should_skip "${QDIR}" "${DRAINER_TOKEN}"; then
+      return 3
+    fi
+    # ownership: synth 開始前。lock を失っていたら synth せず退場（二重再生回避）。
+    vvread_queue_owns_lock "${QDIR}" "${DRAINER_TOKEN}" || return 4
+    wav="${QWAV}_${idx}.wav"
+    srraw=0
+    vvread_say_synth_chunk "${idx}" "${chunks[${idx}]}" "${wav}" "${espk}" \
+      "${total}" "${ENGINES[0]}" || srraw=$?
+    if [ "${srraw}" -ne 0 ]; then
+      rm -f "${wav}"
+      log_info "say drain synth_failed entry_chunk=$((idx + 1))/${total}"
+      return 1
+    fi
+    # ownership: synth 完了直後。lost なら再生せず退場。
+    if ! vvread_queue_owns_lock "${QDIR}" "${DRAINER_TOKEN}"; then
+      rm -f "${wav}"
+      return 4
+    fi
+    vvread_queue_progress "${QDIR}" "${DRAINER_TOKEN}"  # 実処理進捗（synth 完了）
+    log_info "say drain play chunk=$((idx + 1))/${total} speaker=${espk}"
+    prc=0
+    vvread_say_play_chunk "${idx}" "${wav}" "${PID_FILE}" "${total}" || prc=$?
+    rm -f "${wav}"
+    if [ "${prc}" -eq 4 ]; then
+      # 再生中に lock を失った（helper が player 停止）: playing に残し退場
+      return 4
+    elif [ "${prc}" -ne 0 ]; then
+      return 1
+    fi
+    vvread_queue_progress "${QDIR}" "${DRAINER_TOKEN}"  # 実処理進捗（chunk 再生完了）
+    idx=$((idx + 1))
+  done
+  # 最終 chunk 再生中/後に届いた halt を取りこぼさない（単一/最終 chunk の
+  # stop.request 残留対策。Phase 2 の skip consume-and-clear の前段にもなる）
+  if vvread_queue_should_halt "${QDIR}" "${DRAINER_TOKEN}"; then
+    return 2
+  fi
+  return 0
+}
+
+# drainer のメインループ。queue.lock 保持前提（DRAINER_TOKEN 設定済み）。
+_vvread_drain_loop() {
+  local entry drc tok _empty_pop_streak=0
+  while true; do
+    # 前 drainer の crash 残骸を retry+1 で回収（mutation lock 内）
+    if tok=$(_queue_mutate_lock); then
+      # set -e 下で recover が非ゼロ復帰しても mutation lock を leak させない
+      vvread_queue_recover_orphans || true
+      _queue_mutate_unlock "${tok}"
+    fi
+
+    if ! entry=$(vvread_queue_pop); then
+      # 空 → release（abort 前に必ず自分の token で release）。
+      # lost-wakeup 対策で release 後に pending 再スキャン。
+      vvread_queue_release "${QDIR}/queue.lock" "${DRAINER_TOKEN}"
+      if [ "$(_queue_count "${QDIR}/pending")" -gt 0 ]; then
+        # pending>0 なのに pop が空 = wedge シグネチャ（mutate 取得失敗等）。
+        # bounded retry で打ち切り、queue.lock は release 済みのまま次の say へ
+        # 引き継がせる（無限 spin 防止の安全網。self-reclaim をすり抜けた残余対策）。
+        _empty_pop_streak=$((_empty_pop_streak + 1))
+        if [ "${_empty_pop_streak}" -ge "${_QUEUE_EMPTY_POP_MAX:-20}" ]; then
+          log_warn "say drain abort: pending>0 but pop empty x${_empty_pop_streak} (wedge) — yielding to next say"
+          DRAINER_TOKEN=""
+          return 0
+        fi
+        if DRAINER_TOKEN=$(vvread_queue_acquire "${QDIR}/queue.lock"); then
+          continue
+        fi
+      fi
+      DRAINER_TOKEN=""
+      return 0
+    fi
+    _empty_pop_streak=0   # pop 成功でリセット（spin 中は progress も更新しない）
+
+    # pop 成功直後: ownership 検証。回収されていたら entry を playing に残し退場
+    # （二重再生回避。release しない＝もう自分の token ではない）。
+    if ! vvread_queue_owns_lock "${QDIR}" "${DRAINER_TOKEN}"; then
+      log_warn "say drain lost queue.lock after pop entry=${entry}"
+      DRAINER_TOKEN=""
+      return 0
+    fi
+    vvread_queue_progress "${QDIR}" "${DRAINER_TOKEN}"  # 実処理進捗（pop 成功）
+
+    drc=0
+    _vvread_drain_one_entry "${entry}" || drc=$?
+    case "${drc}" in
+      1)
+        # synth/play 失敗: playing に残し orphan recovery の retry に委ねる
+        log_info "say drain entry_failed_retry_pending entry=${entry}"
+        ;;
+      2)
+        # halt(stop): 現エントリを discard。skip/stop signal を消し release して exit。
+        _queue_safe_rm "${QDIR}/playing/${entry}"
+        vvread_queue_clear_skip "${QDIR}" "${DRAINER_TOKEN}"
+        vvread_queue_clear_stop "${QDIR}"
+        vvread_queue_release "${QDIR}/queue.lock" "${DRAINER_TOKEN}"
+        DRAINER_TOKEN=""
+        log_info "say drain halted entry=${entry}"
+        return 0
+        ;;
+      3)
+        # skip: 現エントリを discard。token 一致 skip signal を consume し次 entry へ。
+        _queue_safe_rm "${QDIR}/playing/${entry}"
+        vvread_queue_clear_skip "${QDIR}" "${DRAINER_TOKEN}"
+        log_info "say drain skipped entry=${entry}"
+        ;;
+      4)
+        # lost-lock: queue.lock を回収された。playing entry は残す（failed 移動・
+        # 削除をしない）。release もしない（自分の token ではない）。退場。
+        log_warn "say drain lost queue.lock during entry=${entry}"
+        DRAINER_TOKEN=""
+        return 0
+        ;;
+      *)
+        # 完走: 単一/最終 chunk の skip 残留を consume-and-clear（token 一致のみ）
+        _queue_safe_rm "${QDIR}/playing/${entry}"
+        vvread_queue_clear_skip "${QDIR}" "${DRAINER_TOKEN}"
+        ;;
+    esac
+  done
+}
+
+QUEUE_MODE=$(_vvread_resolve_queue_mode)
+if [ "${QUEUE_MODE}" = "1" ]; then
+  vvread_queue_dirs_init
+  PID_FILE="${STATE_DIR}/playing.pid"
+  QWAV="${STATE_DIR}/qvoice_$$"
+  DRAINER_TOKEN=""
+  SAY_SOURCE="${VVREAD_SAY_SOURCE:-cli}"
+
+  # drain 中の wav と queue.lock を必ず後始末（trap は requeue しない・
+  # playing entry は残し次 drainer の回収に委ねる）
+  _vvread_queue_cleanup() {
+    rm -f "${QWAV}"_*.wav 2>/dev/null || true
+    if [ -n "${DRAINER_TOKEN:-}" ]; then
+      vvread_queue_release "${QDIR}/queue.lock" "${DRAINER_TOKEN}" 2>/dev/null || true
+    fi
+  }
+  trap _vvread_queue_cleanup EXIT
+
+  _submit_rc=0
+  vvread_queue_submit "${SAY_SOURCE}" "${SPEAKER}" "${TEXT}" || _submit_rc=$?
+  log_info "say enqueue source=${SAY_SOURCE} speaker=${SPEAKER} rc=${_submit_rc} text_chars=${#TEXT} text_from=${TEXT:0:10}"
+
+  # drainer になれれば drain、なれなければ既存 drainer に委ねて即終了。
+  # acquire 失敗時は heartbeat-stale な drainer（生存だが進捗なし）を回収して再挑戦。
+  if DRAINER_TOKEN=$(vvread_queue_acquire "${QDIR}/queue.lock"); then
+    log_info "say drainer_start session_pid=$$"
+    _vvread_drain_loop
+  else
+    vvread_queue_reclaim_drain_stale "${QDIR}"
+    if DRAINER_TOKEN=$(vvread_queue_acquire "${QDIR}/queue.lock"); then
+      log_info "say drainer_start session_pid=$$ (reclaimed stale drainer)"
+      _vvread_drain_loop
+    else
+      log_info "say queued (drainer active)"
+    fi
+  fi
+  exit 0
+fi
 
 # ===== sanitize + chunk split =====
 

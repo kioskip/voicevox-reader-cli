@@ -34,12 +34,15 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Dict, List, Optional, Tuple
 
 import json_file as _jf
+import mcp_tools_install as _mti
+import receiver_install as _ri
 import settings as _stg
 from hook_status import is_voiceclaude_hook, resolve_settings_path
 from lib_git import in_git_repo as _in_git_repo
@@ -634,6 +637,165 @@ def _print_hook_status_table(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_repo_root() -> Path:
+    """VVREAD_PROJECT_DIR 環境変数があればそれを、なければスクリプト親の親を返す。"""
+    rr_env = os.environ.get("VVREAD_PROJECT_DIR")
+    return Path(rr_env) if rr_env else Path(__file__).resolve().parent.parent
+
+
+def _run_integration_setup(
+    *,
+    with_mcp: bool,
+    with_receiver: bool,
+    dry_run: bool = False,
+    explicit: bool = False,
+    repo_root: Optional[Path] = None,
+    out_stream: Any = None,
+) -> int:
+    """Step 2: MCP Tools + receiver の登録。
+
+    explicit=True のとき失敗は exit 1 扱い。
+    explicit=False のとき失敗は WARN + 継続 (exit 0)。
+    """
+    out = out_stream or sys.stdout
+    if repo_root is None:
+        repo_root = _resolve_repo_root()
+
+    if not with_mcp and not with_receiver:
+        return 0
+
+    # MCP Tools
+    mcp_status = _mti.check_mcp_tools_registration()
+    if mcp_status == "registered_local":
+        out.write("vvread MCP Tools: already registered (local scope)\n")
+    elif mcp_status == "conflicting_non_local":
+        out.write(
+            "WARNING: vvread は project/global scope で登録済みです。"
+            "手動で整理してください。\n"
+        )
+        if explicit:
+            return 1
+        return 0
+    else:
+        if dry_run:
+            out.write("[dry-run] would register vvread MCP Tools\n")
+        else:
+            ok = _mti.register_mcp_tools(repo_root, dry_run=False)
+            if not ok:
+                out.write("ERROR: vvread MCP Tools の登録に失敗しました\n")
+                if explicit:
+                    return 1
+                return 0
+            out.write("vvread MCP Tools: registered (local scope)\n")
+
+    if not with_receiver:
+        return 0
+
+    # receiver
+    if not shutil.which("bun"):
+        out.write("WARNING: bun が見つかりません。receiver の登録をスキップします。\n")
+        if explicit:
+            return 1
+        return 0
+
+    receiver_dir = repo_root / "receiver"
+    if not dry_run and not _ri.ensure_receiver_dependencies(
+        receiver_dir, dry_run=False
+    ):
+        if explicit:
+            return 1
+        return 0
+
+    recv_status = _ri.get_receiver_registration_status()
+    if recv_status == "registered_local":
+        out.write("vvread-receiver: already registered (local scope)\n")
+        return 0
+    if recv_status == "conflicting_non_local":
+        out.write(
+            "WARNING: vvread-receiver は project/global scope で登録済みです。"
+            "手動で整理してください。\n"
+        )
+        if explicit:
+            return 1
+        return 0
+
+    if dry_run:
+        out.write("[dry-run] would register vvread-receiver MCP server\n")
+        return 0
+
+    ok = _ri.register_receiver_mcp(repo_root, dry_run=False)
+    if not ok:
+        out.write("ERROR: vvread-receiver の登録に失敗しました\n")
+        if explicit:
+            return 1
+        return 0
+
+    out.write("vvread-receiver: registered (local scope)\n")
+    _ri.print_receiver_activation_guide()
+    return 0
+
+
+def _interactive_integration_setup(
+    *,
+    repo_root: Path,
+    dry_run: bool = False,
+    in_stream: Any = None,
+    out_stream: Any = None,
+) -> None:
+    """対話モード用: MCP Tools [Y/n] → receiver [y/N] プロンプト。"""
+    out = out_stream or sys.stdout
+    out.write("\n")
+
+    # MCP Tools: default Yes
+    want_mcp = _prompt_yn(
+        "Set up Claude Code MCP Tools? (optional)",
+        default=True,
+        in_stream=in_stream,
+        out_stream=out,
+    )
+    if not want_mcp:
+        return
+
+    mcp_status = _mti.check_mcp_tools_registration()
+    if mcp_status == "registered_local":
+        out.write("vvread MCP Tools: already registered\n")
+    elif mcp_status == "conflicting_non_local":
+        out.write(
+            "WARNING: vvread は project/global scope で登録済みです。"
+            "手動で整理してください。\n"
+        )
+        return
+    else:
+        if dry_run:
+            out.write("[dry-run] would register vvread MCP Tools\n")
+        else:
+            ok = _mti.register_mcp_tools(repo_root, dry_run=False)
+            if not ok:
+                out.write("WARNING: MCP Tools の登録に失敗しました\n")
+                return
+            out.write("vvread MCP Tools: registered\n")
+
+    # receiver: default No
+    want_recv = _prompt_yn(
+        "Set up external-event receiver?\n"
+        "  (Claude Code Channels / experimental, requires Bun)",
+        default=False,
+        in_stream=in_stream,
+        out_stream=out,
+    )
+    if not want_recv:
+        return
+
+    _run_integration_setup(
+        with_mcp=False,
+        with_receiver=True,
+        dry_run=dry_run,
+        explicit=False,
+        repo_root=repo_root,
+        out_stream=out,
+    )
+
+
 def interactive_install(
     *,
     scope: Optional[str] = None,
@@ -868,6 +1030,14 @@ def interactive_install(
         _write_vvread_settings_speaker(cwd, selected_speaker)
         out.write(f"Speaker ID {selected_speaker} を vvread.settings.json に保存しました。\n")
 
+    # Step 3: MCP Tools / receiver の対話プロンプト
+    _interactive_integration_setup(
+        repo_root=repo_root,
+        dry_run=dry_run,
+        in_stream=in_stream,
+        out_stream=out,
+    )
+
     return 0
 
 
@@ -876,9 +1046,26 @@ def _cmd_install(args: argparse.Namespace) -> int:
     if warn:
         print(warn, file=sys.stderr)
 
-    if not args.yes and not args.dry_run:
-        return interactive_install(scope=scope, dry_run=False)
+    repo_root = _resolve_repo_root()
+    with_mcp = getattr(args, "with_mcp", False)
+    with_receiver = getattr(args, "with_receiver", False)
+    receiver_only = getattr(args, "receiver_only", False)
 
+    # --receiver-only: Step 1 (Stop hook) をスキップして integration のみ実行
+    if receiver_only:
+        return _run_integration_setup(
+            with_mcp=True,
+            with_receiver=True,
+            dry_run=args.dry_run,
+            explicit=True,
+            repo_root=repo_root,
+        )
+
+    # 対話モード（明示フラグなし、--yes なし、--dry-run なし）
+    if not args.yes and not args.dry_run and not with_mcp and not with_receiver:
+        return interactive_install(scope=scope, dry_run=False, repo_root=repo_root)
+
+    # 非対話 / 明示フラグあり: Step 1 (Stop hook)
     result = install(
         scope=scope,
         dry_run=args.dry_run,
@@ -886,7 +1073,21 @@ def _cmd_install(args: argparse.Namespace) -> int:
     )
     _emit_install(result)
     _ensure_vvread_settings_file(Path.cwd(), dry_run=args.dry_run, out=sys.stdout)
-    return 1 if result.error else 0
+    exit_code = 1 if result.error else 0
+
+    # Step 2: MCP Tools / receiver
+    if with_mcp or with_receiver:
+        int_exit = _run_integration_setup(
+            with_mcp=True,
+            with_receiver=with_receiver,
+            dry_run=args.dry_run,
+            explicit=True,
+            repo_root=repo_root,
+        )
+        if int_exit != 0:
+            exit_code = 1
+
+    return exit_code
 
 
 def _cmd_uninstall(args: argparse.Namespace) -> int:
@@ -934,6 +1135,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_install.add_argument(
         "--yes", action="store_true",
         help="non-interactive mode: skip prompts and use defaults",
+    )
+    p_install.add_argument(
+        "--with-mcp", action="store_true",
+        help="Stop hook + MCP Tools (vvread) を登録",
+    )
+    _recv_group = p_install.add_mutually_exclusive_group()
+    _recv_group.add_argument(
+        "--with-receiver", action="store_true",
+        help="Stop hook + MCP Tools + receiver (vvread-receiver) を登録",
+    )
+    _recv_group.add_argument(
+        "--receiver-only", action="store_true",
+        help="Register MCP Tools and receiver without installing the Stop hook",
     )
     p_install.set_defaults(func=_cmd_install)
 

@@ -594,6 +594,62 @@ class TestEngines:
         assert r.returncode == 0
         assert "VOICEVOX_ENGINES='http://127.0.0.1:50021;http://127.0.0.1:50022'" in r.stdout
 
+    # F-116: engineUrl の list 形式（engines の legacy alias）を cascade で正しく解決する。
+    # 値そのものを assert する（例外が出ないことだけでは silent 破壊を見逃す）。
+    def test_engine_url_list_form_derives_engines(self, tmp_path):
+        """engineUrl が list 形式でも normalize して engines に派生し、
+        engineUrl は engines[0] の単一 str に正規化される。"""
+        s = _load(tmp_path, project_data={
+            "voicevox": {"engineUrl": [
+                "http://127.0.0.1:50021/",   # trailing slash → 除去
+                "http://127.0.0.1:50022",
+                "http://127.0.0.1:50021",    # 重複 → 除去
+            ]}
+        })
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://127.0.0.1:50021", "http://127.0.0.1:50022"]
+        assert rv.origin.source == "derived"
+        eu = s.get("voicevox.engineUrl")
+        assert isinstance(eu.value, str)
+        assert eu.value == "http://127.0.0.1:50021"
+
+    def test_engine_url_list_no_string_garbage(self, tmp_path):
+        """回帰: list engineUrl が _coerce で str() 化された 1 要素ゴミ
+        (\"['http://a', 'http://b']\") にならないこと。"""
+        s = _load(tmp_path, project_data={
+            "voicevox": {"engineUrl": ["http://a:50021", "http://b:50022"]}
+        })
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://a:50021", "http://b:50022"]
+        for u in rv.value:
+            assert not u.startswith("["), f"stringified garbage leaked: {u!r}"
+
+    def test_engine_url_empty_list_falls_back_to_default_no_throw(self, tmp_path):
+        """engineUrl=[] は例外を投げず default engine にフォールバック（load の非例外契約）。"""
+        s = _load(tmp_path, project_data={"voicevox": {"engineUrl": []}})
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://127.0.0.1:50021"]
+        assert isinstance(s.get("voicevox.engineUrl").value, str)
+
+    def test_engine_url_list_all_invalid_falls_back_with_parse_error(self, tmp_path):
+        """list の全要素が不正（非文字列 / 不正 scheme / 空）でも例外を投げず
+        default にフォールバックし、parse_errors に警告を積む。"""
+        s = _load(tmp_path, project_data={
+            "voicevox": {"engineUrl": [123, "ftp://bad.example", ""]}
+        })
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://127.0.0.1:50021"]
+        assert any("voicevox.engineUrl" in msg for _, msg in s.parse_errors)
+
+    def test_engines_key_wins_over_engine_url_list(self, tmp_path):
+        """engineUrl(list) と engines 併存 → engines 優先。"""
+        s = _load(tmp_path, project_data={"voicevox": {
+            "engineUrl": ["http://old:50021"],
+            "engines": ["http://new:50021"],
+        }})
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://new:50021"]
+
 
 # ---------------------------------------------------------------------------
 # U-117: normalize_engines / canonicalize_settings_dict
@@ -653,6 +709,31 @@ class TestCanonicalizeSettingsDict:
         result = settings_module.canonicalize_settings_dict(data)
         assert result["voicevox"]["engines"] == ["http://127.0.0.1:50021"]
         assert "engineUrl" not in result["voicevox"]
+
+    # F-116: engineUrl の list 形式も保存時に engines へ統一し engineUrl を削除する。
+    def test_engine_url_list_form_converts_to_engines(self):
+        data = {"voicevox": {"engineUrl": [
+            "http://127.0.0.1:50021/",   # trailing slash → 除去
+            "http://127.0.0.1:50022",
+            "http://127.0.0.1:50021",    # 重複 → 除去
+        ]}}
+        result = settings_module.canonicalize_settings_dict(data)
+        assert result["voicevox"]["engines"] == [
+            "http://127.0.0.1:50021", "http://127.0.0.1:50022",
+        ]
+        assert "engineUrl" not in result["voicevox"]
+
+    def test_engine_url_empty_list_raises(self):
+        """engineUrl=[] は有効 URL ゼロ → ValueError（save 側で ERROR 表示に変換）。"""
+        with pytest.raises(ValueError, match="有効な URL が1件もありません"):
+            settings_module.canonicalize_settings_dict({"voicevox": {"engineUrl": []}})
+
+    def test_engine_url_list_all_invalid_raises(self):
+        """list の全要素が不正 → ValueError。"""
+        with pytest.raises(ValueError, match="有効な URL が1件もありません"):
+            settings_module.canonicalize_settings_dict(
+                {"voicevox": {"engineUrl": [123, "ftp://bad", ""]}}
+            )
 
     def test_engines_wins_over_engine_url(self):
         data = {"voicevox": {
