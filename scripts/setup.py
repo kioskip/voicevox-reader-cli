@@ -33,7 +33,7 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -80,6 +80,9 @@ class SetupContext:
     skip_engine: bool = False
     skip_e2k: bool = False
     skip_hook: bool = False
+    skip_mcp: bool = False
+    with_mcp: bool = False
+    with_receiver: bool = False
     install_e2k: Optional[bool] = None  # None = 対話で聞く / True = 強制インストール / False = skip
     hook_scope: str = _hi.DEFAULT_SCOPE
     cwd: Path = field(default_factory=Path.cwd)
@@ -610,6 +613,327 @@ def step_hook(ctx: SetupContext) -> StepResult:
 
 
 # ---------------------------------------------------------------------------
+# step: mcp
+# ---------------------------------------------------------------------------
+
+_MCP_SYNC_TIMEOUT_SEC = 120
+
+
+def _check_mcp_installed(repo_root: Path) -> bool:
+    """voiceClaude .venv に mcp distribution が入っているかを確認する。
+
+    dependency gate の責務は「dist がインストール済みか」だけ。重い
+    `import mcp`(pydantic 等 ~378 モジュールを cold compile する)は責務過剰で、
+    `uv sync` 直後の初回 import が `timeout` を超過して誤 WARN を出す原因に
+    なり得る。doctor.py と同じく軽量な `importlib.metadata.version()` で確認する。
+    runtime import / server 起動は MCP server テスト・E2E で担保する。"""
+    venv_python = repo_root / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        return False
+    try:
+        r = subprocess.run(
+            [str(venv_python), "-c",
+             "import importlib.metadata as m; m.version('mcp')"],
+            capture_output=True, timeout=10,
+        )
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def step_mcp(ctx: SetupContext) -> StepResult:
+    if ctx.skip_mcp:
+        return StepResult(
+            step="mcp", status=STATUS_SKIPPED,
+            message="mcp step skipped (--skip-mcp)",
+        )
+
+    # --yes 単体は skip（opt-in が必要）
+    if not ctx.with_mcp and ctx.yes:
+        return StepResult(
+            step="mcp", status=STATUS_SKIPPED,
+            message="mcp step skipped (use --with-mcp to enable)",
+        )
+
+    # 通常対話: default=No
+    if not ctx.with_mcp:
+        answer = _prompt_yes_no(ctx, "Set up MCP server integration? (optional)", default=False)
+        if not answer:
+            return StepResult(
+                step="mcp", status=STATUS_SKIPPED,
+                message="mcp step skipped",
+            )
+
+    # -----------------------------------------------------------------------
+    # mcp package チェック + インストール
+    # -----------------------------------------------------------------------
+    repo_root = ctx.repo_root or SCRIPT_DIR.parent
+    runner = ctx.runner or _default_runner
+
+    if not _check_mcp_installed(repo_root):
+        if ctx.dry_run:
+            return StepResult(
+                step="mcp", status=STATUS_OK,
+                message="[dry-run] would run: uv sync --extra mcp",
+            )
+        if not shutil.which("uv"):
+            return StepResult(
+                step="mcp", status=STATUS_WARN,
+                message="uv が見つかりません。mcp package を手動でインストールしてください",
+                hint=f"cd {repo_root} && uv sync --extra mcp",
+            )
+        try:
+            proc = runner(
+                ["uv", "sync", "--extra", "mcp"],
+                capture_output=True, text=True,
+                timeout=_MCP_SYNC_TIMEOUT_SEC,
+                cwd=str(repo_root),
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return StepResult(
+                step="mcp", status=STATUS_WARN,
+                message=f"uv sync failed: {e}",
+                hint=f"手動でインストール: cd {repo_root} && uv sync --extra mcp",
+            )
+        if proc.returncode != 0:
+            return StepResult(
+                step="mcp", status=STATUS_WARN,
+                message=f"uv sync exit {proc.returncode}",
+                detail=(proc.stderr or "").strip()[-300:],
+                hint=f"手動でインストール: cd {repo_root} && uv sync --extra mcp",
+            )
+        # sync 後にもう一度確認
+        if not _check_mcp_installed(repo_root):
+            return StepResult(
+                step="mcp", status=STATUS_WARN,
+                message="uv sync 後も mcp package の確認に失敗",
+                hint=f"cd {repo_root} && uv sync --extra mcp を再実行してください",
+            )
+
+    # -----------------------------------------------------------------------
+    # claude CLI チェック
+    # -----------------------------------------------------------------------
+    if not shutil.which("claude"):
+        vvread_path = str(repo_root / "bin" / "vvread")
+        return StepResult(
+            step="mcp", status=STATUS_WARN,
+            message="claude CLI が見つかりません",
+            hint=(
+                "手動で登録してください:\n"
+                f"  claude mcp add --transport stdio --scope local vvread "
+                f"-- {vvread_path} mcp"
+            ),
+        )
+
+    # -----------------------------------------------------------------------
+    # 登録済みチェック
+    # -----------------------------------------------------------------------
+    try:
+        check = runner(
+            ["claude", "mcp", "get", "vvread"],
+            capture_output=True, text=True,
+            timeout=10,
+            cwd=str(ctx.cwd),
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return StepResult(
+            step="mcp", status=STATUS_WARN,
+            message=f"claude mcp get failed: {e}",
+        )
+    if check.returncode == 0:
+        return StepResult(
+            step="mcp", status=STATUS_WARN,
+            message="vvread already registered (not overwriting)",
+            hint="To update: claude mcp remove vvread && vvread setup --with-mcp",
+        )
+
+    # -----------------------------------------------------------------------
+    # 登録
+    # -----------------------------------------------------------------------
+    vvread_path = str(repo_root / "bin" / "vvread")
+    if ctx.dry_run:
+        return StepResult(
+            step="mcp", status=STATUS_OK,
+            message=(
+                "[dry-run] would run: claude mcp add --transport stdio --scope local "
+                f"vvread -- {vvread_path} mcp"
+            ),
+        )
+    try:
+        add = runner(
+            [
+                "claude", "mcp", "add",
+                "--transport", "stdio",
+                "--scope", "local",
+                "vvread", "--", vvread_path, "mcp",
+            ],
+            capture_output=True, text=True,
+            timeout=15,
+            cwd=str(ctx.cwd),
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return StepResult(
+            step="mcp", status=STATUS_WARN,
+            message=f"claude mcp add failed: {e}",
+        )
+    if add.returncode != 0:
+        return StepResult(
+            step="mcp", status=STATUS_WARN,
+            message=f"claude mcp add exit {add.returncode}",
+            detail=(add.stderr or "").strip()[-300:],
+        )
+    return StepResult(
+        step="mcp", status=STATUS_OK,
+        message="registered vvread MCP server",
+        detail=f"command={vvread_path} mcp",
+    )
+
+
+# ---------------------------------------------------------------------------
+# receiver セットアップ (B-138/B-149)
+# ---------------------------------------------------------------------------
+#
+# --with-mcp とは別フラグ --with-receiver で扱う（receiver は research preview +
+# Bun 依存のため）。--with-mcp の意味は変えない（Python MCP Tools のみ）。
+# 副作用（bun 依存インストール + current project への local 登録）は対話で事前確認。
+# --yes --with-receiver のみ確認省略。--dry-run は外部設定を書き換えない。
+
+import receiver_install as _ri  # noqa: E402
+
+
+def _receiver_sdk_installed(receiver_dir: Path) -> bool:
+    """receiver/ に MCP SDK が bun install 済みかを確認する。"""
+    return (receiver_dir / "node_modules" / "@modelcontextprotocol" / "sdk").exists()
+
+
+def step_receiver(ctx: SetupContext) -> StepResult:
+    # --yes 単体は skip（opt-in が必要）
+    if not ctx.with_receiver and ctx.yes:
+        return StepResult(
+            step="receiver", status=STATUS_SKIPPED,
+            message="receiver step skipped (use --with-receiver to enable)",
+        )
+
+    # 対話: "Set up external-event receiver?" (default=No)
+    if not ctx.with_receiver:
+        answer = _prompt_yes_no(
+            ctx,
+            "Set up external-event receiver?\n"
+            "  (Claude Code Channels / experimental, requires Bun)",
+            default=False,
+        )
+        if not answer:
+            return StepResult(
+                step="receiver", status=STATUS_SKIPPED,
+                message="receiver step skipped",
+            )
+
+    repo_root = ctx.repo_root or SCRIPT_DIR.parent
+    runner = ctx.runner or _default_runner
+    receiver_dir = repo_root / "receiver"
+    server_path = receiver_dir / "server.ts"
+    launch_hint = (
+        "claude --dangerously-load-development-channels server:vvread-receiver"
+    )
+
+    # opt-in 後の確認: 実行内容を表示して Continue? [y/N]
+    # --yes (--with-receiver 付き) なら省略。--dry-run も不要。
+    if not ctx.yes and not ctx.dry_run:
+        out = ctx.out_stream or sys.stdout
+        out.write(
+            "以下の変更を行います:\n"
+            "  - receiver の依存を Bun でインストール（必要な場合のみ）\n"
+            "  - vvread MCP tools を現在の project に登録（未登録の場合のみ）\n"
+            "  - vvread-receiver を Claude Code の local scope に登録\n"
+        )
+        ok = _prompt_yes_no(ctx, "続けますか?", default=False)
+        if not ok:
+            return StepResult(
+                step="receiver", status=STATUS_SKIPPED,
+                message="receiver step skipped (declined)",
+            )
+
+    # 1. bun 存在確認（任意機能なので無ければ WARN + 手動手順、setup は継続）
+    if not shutil.which("bun"):
+        return StepResult(
+            step="receiver", status=STATUS_WARN,
+            message="bun が見つかりません（receiver は任意機能）",
+            hint=(
+                "Bun をインストール後、手動で:\n"
+                f"  cd {receiver_dir} && bun install --frozen-lockfile\n"
+                f"  claude mcp add --transport stdio --scope local vvread-receiver "
+                f"-- bun {server_path}"
+            ),
+        )
+
+    # 2. 依存 + 登録（dry-run は何も実行せず予定だけ返す）
+    needs_install = not _receiver_sdk_installed(receiver_dir)
+    if ctx.dry_run:
+        plan = []
+        if needs_install:
+            plan.append(f"cd {receiver_dir} && bun install --frozen-lockfile")
+        plan.append(
+            "claude mcp add --transport stdio --scope local vvread-receiver "
+            f"-- bun {server_path}"
+        )
+        return StepResult(
+            step="receiver", status=STATUS_OK,
+            message="[dry-run] would run:\n  " + "\n  ".join(plan),
+            hint=f"起動: {launch_hint}",
+        )
+
+    if needs_install:
+        ok = _ri.ensure_receiver_dependencies(receiver_dir, dry_run=False, runner=runner)
+        if not ok:
+            return StepResult(
+                step="receiver", status=STATUS_WARN,
+                message="bun install failed",
+                hint=f"手動で: cd {receiver_dir} && bun install --frozen-lockfile",
+            )
+
+    # 3. claude CLI チェック
+    if not shutil.which("claude"):
+        return StepResult(
+            step="receiver", status=STATUS_WARN,
+            message="claude CLI が見つかりません",
+            hint=(
+                "手動で登録してください:\n"
+                f"  claude mcp add --transport stdio --scope local vvread-receiver "
+                f"-- bun {server_path}"
+            ),
+        )
+
+    # 既登録チェック（local scope のみ、.mcp.json は変更しない）
+    status = _ri.get_receiver_registration_status(runner)
+    if status == "registered_local":
+        return StepResult(
+            step="receiver", status=STATUS_WARN,
+            message="vvread-receiver already registered (not overwriting)",
+            hint=f"起動: {launch_hint}",
+        )
+    if status == "conflicting_non_local":
+        return StepResult(
+            step="receiver", status=STATUS_WARN,
+            message="vvread-receiver は project/global scope で登録済みです。手動で整理してください。",
+            hint="claude mcp remove vvread-receiver 後に再試行してください。",
+        )
+
+    # 登録
+    ok = _ri.register_receiver_mcp(repo_root, dry_run=False, runner=runner)
+    if not ok:
+        return StepResult(
+            step="receiver", status=STATUS_WARN,
+            message="claude mcp add failed",
+        )
+    return StepResult(
+        step="receiver", status=STATUS_OK,
+        message="registered vvread-receiver MCP server",
+        detail=f"command=bun {server_path}",
+        hint=f"起動: {launch_hint}",
+    )
+
+
+# ---------------------------------------------------------------------------
 # orchestrator
 # ---------------------------------------------------------------------------
 
@@ -629,7 +953,7 @@ def run_setup(ctx: SetupContext) -> List[StepResult]:
     results: List[StepResult] = []
     abort = False
 
-    for step_fn in (step_engine, step_e2k, step_hook):
+    for step_fn in (step_engine, step_e2k, step_hook, step_mcp, step_receiver):
         if abort:
             results.append(StepResult(
                 step=step_fn.__name__.replace("step_", ""),
@@ -701,6 +1025,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--skip-hook", action="store_true",
         help="skip the hook registration step",
     )
+    mcp_group = parser.add_mutually_exclusive_group()
+    mcp_group.add_argument(
+        "--skip-mcp", action="store_true",
+        help="skip the MCP registration step",
+    )
+    mcp_group.add_argument(
+        "--with-mcp", action="store_true",
+        help="run MCP registration step (even with --yes)",
+    )
+    parser.add_argument(
+        "--with-receiver", action="store_true",
+        help="set up receiver (Bun deps + local registration of vvread-receiver)",
+    )
     parser.add_argument(
         "--install-e2k",
         action="store_true",
@@ -744,6 +1081,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         skip_engine=args.skip_engine,
         skip_e2k=args.skip_e2k,
         skip_hook=args.skip_hook,
+        skip_mcp=args.skip_mcp,
+        with_mcp=args.with_mcp,
+        with_receiver=args.with_receiver,
         install_e2k=install_e2k_explicit,
         hook_scope=args.scope,
         repo_root=repo_root,

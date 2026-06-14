@@ -119,6 +119,29 @@ vvread_say_play_chunk() {
     return 1
   fi
 
+  # queue mode（QDIR + DRAINER_TOKEN 設定時）のみ: 再生中に queue.lock の lease
+  # heartbeat を更新する helper を background 起動する。blocking wait は維持し
+  # （polling 置換は chunk 毎に最大 HB_INTERVAL 秒の無音を生む）、ownership を失った
+  # 場合は player を停止して lost-lock を marker で親へ通知する（rc=4）。
+  # helper は ownership 確認 → hb 更新 → sleep の順（lock 喪失後に再生し続けない）。
+  local _hb_helper_pid="" _lost_marker=""
+  if [ -n "${QDIR:-}" ] && [ -n "${DRAINER_TOKEN:-}" ]; then
+    _lost_marker="${STATE_DIR}/qlostlock.$$.${idx}"
+    rm -f "${_lost_marker}" 2>/dev/null || true
+    (
+      while kill -0 "${pid}" 2>/dev/null; do
+        if ! vvread_queue_owns_lock "${QDIR}" "${DRAINER_TOKEN}"; then
+          : > "${_lost_marker}" 2>/dev/null || true
+          kill "${pid}" 2>/dev/null || true
+          break
+        fi
+        vvread_queue_drain_heartbeat "${QDIR}" "${DRAINER_TOKEN}"
+        sleep "${_QUEUE_HB_INTERVAL:-5}" 2>/dev/null || sleep 5
+      done
+    ) &
+    _hb_helper_pid=$!
+  fi
+
   # 同期再生。preempt 時の kill で wait は非ゼロ復帰するが異常ではない。
   # 前提: vvread_play_async が同一シェルの子プロセスとして player を起動すること。
   #       サブシェル越しに起動された PID を wait した場合、ゾンビ化や wait 失敗の
@@ -126,6 +149,10 @@ vvread_say_play_chunk() {
   # T-014: wait_rc をデバッグログに残す（preempt vs 異常終了の区別用）
   wait "${pid}" 2>/dev/null
   local wait_rc=$?
+  if [ -n "${_hb_helper_pid}" ]; then
+    kill "${_hb_helper_pid}" 2>/dev/null || true
+    wait "${_hb_helper_pid}" 2>/dev/null || true
+  fi
   if [ "${wait_rc}" -ne 0 ]; then
     log_debug "say player_wait_nonzero chunk=$((idx + 1))/${chunk_total} wait_rc=${wait_rc}"
   fi
@@ -135,6 +162,13 @@ vvread_say_play_chunk() {
   current_pid=$(cat "${pid_file}" 2>/dev/null || echo "")
   if [ "${current_pid}" = "${pid}" ]; then
     rm -f "${pid_file}"
+  fi
+
+  # lost-lock 検知（helper が ownership 喪失で player 停止）: 専用 rc=4 で親へ伝播。
+  # generic playback error（rc=1）と区別し、entry を failed 移動・削除させない。
+  if [ -n "${_lost_marker}" ] && [ -f "${_lost_marker}" ]; then
+    rm -f "${_lost_marker}" 2>/dev/null || true
+    return 4
   fi
   return 0
 }

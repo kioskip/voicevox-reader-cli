@@ -209,6 +209,115 @@ class TestFormatSpeakers:
 # ---------------------------------------------------------------------------
 
 
+class TestSpeakersDto:
+    """_speakers_dto のテスト"""
+
+    def test_returns_stable_dto(self):
+        dto = sp._speakers_dto(SAMPLE_SPEAKERS)
+        assert len(dto) == 2
+        assert dto[0] == {
+            "name": "ずんだもん",
+            "styles": [
+                {"id": 3, "name": "ノーマル"},
+                {"id": 1, "name": "あまあま"},
+                {"id": 7, "name": "ツンツン"},
+            ],
+        }
+
+    def test_speaker_uuid_excluded(self):
+        dto = sp._speakers_dto(SAMPLE_SPEAKERS)
+        for item in dto:
+            assert "speaker_uuid" not in item
+
+    def test_malformed_speaker_excluded(self):
+        data = [{"no_name": True, "styles": [{"id": 1, "name": "A"}]}, SAMPLE_SPEAKERS[0]]
+        dto = sp._speakers_dto(data)
+        assert len(dto) == 1
+        assert dto[0]["name"] == "ずんだもん"
+
+    def test_malformed_style_excluded(self):
+        data = [{
+            "name": "テスト",
+            "styles": [
+                {"id": "not_int", "name": "A"},
+                {"id": 5, "name": "valid"},
+            ],
+        }]
+        dto = sp._speakers_dto(data)
+        assert dto == [{"name": "テスト", "styles": [{"id": 5, "name": "valid"}]}]
+
+    def test_empty_list(self):
+        assert sp._speakers_dto([]) == []
+
+    def test_non_dict_entry_excluded(self):
+        dto = sp._speakers_dto(["not_a_dict", SAMPLE_SPEAKERS[0]])
+        assert len(dto) == 1
+
+
+class TestFetchAndDisplayJsonMode:
+    """fetch_and_display json_mode のテスト"""
+
+    def test_json_mode_returns_dto(self):
+        url, shutdown = _make_mock_server(SAMPLE_SPEAKERS)
+        try:
+            out = io.StringIO()
+            err = io.StringIO()
+            rc = sp.fetch_and_display(url, json_mode=True, out=out, err=err)
+            assert rc == 0
+            data = json.loads(out.getvalue())
+            assert isinstance(data, list)
+            assert len(data) == 2
+            assert data[0]["name"] == "ずんだもん"
+            assert all("styles" in item for item in data)
+            assert "speaker_uuid" not in str(out.getvalue())
+        finally:
+            shutdown()
+
+    def test_json_mode_empty_valid_entries_returns_empty_list(self):
+        """valid entries が 0 件でも json_mode では exit 0 + [] を返す"""
+        url, shutdown = _make_mock_server([{"no_name": True}])
+        try:
+            out = io.StringIO()
+            err = io.StringIO()
+            rc = sp.fetch_and_display(url, json_mode=True, out=out, err=err)
+            assert rc == 0
+            data = json.loads(out.getvalue())
+            assert data == []
+            assert err.getvalue() == ""
+        finally:
+            shutdown()
+
+    def test_json_mode_fetch_error_returns_1(self):
+        out = io.StringIO()
+        err = io.StringIO()
+        # port 1 は到達不能（connection refused）を意図した値。fetch 失敗時の挙動を検証。
+        rc = sp.fetch_and_display("http://127.0.0.1:1", json_mode=True, out=out, err=err)
+        assert rc == 1
+        assert out.getvalue() == ""
+
+
+class TestVvreadSpeakersCliJsonFlag:
+    """bin/vvread speakers --json のテスト"""
+
+    def test_json_flag_outputs_dto(self):
+        url, shutdown = _make_mock_server(SAMPLE_SPEAKERS)
+        try:
+            result = subprocess.run(
+                [str(VVREAD), "speakers", "--json", "--engine-url", url],
+                capture_output=True,
+                text=True,
+                env=_clean_env(),
+                timeout=10,
+            )
+            assert result.returncode == 0
+            data = json.loads(result.stdout)
+            assert isinstance(data, list)
+            assert data[0]["name"] == "ずんだもん"
+            assert "speaker_uuid" not in result.stdout
+        finally:
+            shutdown()
+
+
 class TestFetchAndDisplay:
     def test_exit_0_on_success(self):
         url, shutdown = _make_mock_server(SAMPLE_SPEAKERS)

@@ -509,3 +509,64 @@ class TestCollectAndMain:
         assert s["INFO"] == 1
         assert s["WARN"] == 1
         assert s["ERROR"] == 1
+
+
+# ---------------------------------------------------------------------------
+# check_queue（F-114 wedge / busy / stale mutate 診断）
+# ---------------------------------------------------------------------------
+
+
+class TestCheckQueue:
+    def _mk_queue(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("VVREAD_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("VVREAD_LOG_DIR", str(tmp_path / "log"))
+        qd = tmp_path / "state" / "queue"
+        for sub in ("pending", "playing", "failed"):
+            (qd / sub).mkdir(parents=True, exist_ok=True)
+        return qd
+
+    def test_no_queue_dir_emits_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("VVREAD_STATE_DIR", str(tmp_path / "state"))
+        items = doctor_mod.check_queue()
+        assert _statuses(items, "queue") == []
+
+    def test_wedge_is_warn(self, tmp_path, monkeypatch):
+        qd = self._mk_queue(tmp_path, monkeypatch)
+        (qd / "pending" / "1000000000000_1.1.3.cli.r0").write_text("x")
+        lock = qd / "queue.lock"; lock.mkdir()
+        (lock / "owner").write_text(f"{os.getpid()}\ttok\n")  # 生存 pid
+        (lock / "hb").write_text("100\n")        # stale
+        (lock / "progress").write_text("100\n")  # stale
+        items = doctor_mod.check_queue()
+        d = _by_label(items, "drainer")
+        assert d is not None and d.status == "WARN"
+        assert "wedged" in d.detail
+        assert "queue reset" in (d.hint or "")
+
+    def test_busy_is_info(self, tmp_path, monkeypatch):
+        import time as _t
+        qd = self._mk_queue(tmp_path, monkeypatch)
+        (qd / "pending" / "1000000000000_1.1.3.cli.r0").write_text("x")
+        lock = qd / "queue.lock"; lock.mkdir()
+        (lock / "owner").write_text(f"{os.getpid()}\ttok\n")
+        (lock / "hb").write_text(f"{int(_t.time())}\n")  # fresh = 再生中
+        (lock / "progress").write_text("100\n")          # stale
+        items = doctor_mod.check_queue()
+        d = _by_label(items, "drainer")
+        assert d is not None and d.status == "INFO"
+        assert "busy" in d.detail
+
+    def test_no_drainer_is_ok(self, tmp_path, monkeypatch):
+        self._mk_queue(tmp_path, monkeypatch)
+        items = doctor_mod.check_queue()
+        d = _by_label(items, "drainer")
+        assert d is not None and d.status == "OK"
+
+    def test_stale_mutate_is_warn(self, tmp_path, monkeypatch):
+        qd = self._mk_queue(tmp_path, monkeypatch)
+        m = qd / "queue.mutate.lock"; m.mkdir()
+        (m / "owner").write_text(f"{os.getpid()}\ttok\n")  # 生存
+        (m / "hb").write_text("100\n")                      # stale
+        items = doctor_mod.check_queue()
+        ml = _by_label(items, "mutate.lock")
+        assert ml is not None and ml.status == "WARN"

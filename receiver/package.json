@@ -1,0 +1,8 @@
+{
+  "name": "vvread-receiver",
+  "version": "0.0.1",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

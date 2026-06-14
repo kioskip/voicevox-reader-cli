@@ -17,6 +17,26 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.4.0] - 2026-06-14
+
+### Added
+- **MCP サーバー** (`vvread mcp`): `vvread_say` / `vvread_stop` / `vvread_status` / `vvread_speakers` / `vvread_config_set` の 5 ツールを MCP (stdio) で公開。`scripts/mcp_server.py`（FastMCP）実装。`uv sync --extra mcp` で有効化。(B-110 / B-133 / B-134)
+- **キュー再生モード** (`vvread queue`): `queue on/off/status/clear` + `say --queue`/`--no-queue`。`lib/queue.sh`（mkdir 排他ロック）で直列再生を保証。`vvread queue skip` で再生中エントリのみスキップ。`vvread queue failed <list/rm/clear/cleanup>` で失敗エントリ管理。(B-015 / B-144 / B-145)
+- **receiver 連携**（実験的）: `receiver/server.ts`（TypeScript/Bun）が Claude Code Channels 経由で外部イベントを受信し、Claude が日本語要約して `vvread_say` で読み上げる。`vvread setup --with-receiver` / `vvread install --with-receiver` でインストール。E2E 全レッグ検証済み（2026/06/06）。(B-132 / B-137 / B-138 / B-148 / B-149)
+- `vvread setup` に MCP 登録ステップを追加。`--with-mcp`/`--skip-mcp` フラグで制御。(B-135)
+- `publish/MCP.md` / `publish/MCP.en.md`: MCP ツール登録手順・5 ツール説明・receiver 連携セクションを新規追加。(B-136 / B-139)
+
+### Changed
+- `vvread-channel` → `vvread-receiver` にコード全体を rename。ユーザー向け用語を「receiver（外部イベントを受信するサーバー）」に統一。(B-149)
+
+### Fixed
+- **queue デッドロック** (F-114): state dir パスに空白（macOS `Application Support`）が含まれる場合に `for f in $(_queue_sorted ...)` が word-split で壊れ drainer が無限 spin していた問題を `while read` 化で修正。defense-in-depth として self-reclaim / owner 一本化 / heartbeat 分離 / spin abort を実装。
+- **queue FIFO 順序逆転** (F-118): `mutate_lock` 取得後に `submit_ms` を取得していたため lock 競合で enqueue 順が逆転していた問題を修正。lock 取得前に `submit_ms` を捕捉するよう変更。
+- **`vvread config` クラッシュ** (F-116): `voicevox.engineUrl` が list 形式の場合に `AttributeError: 'list' object has no attribute 'rstrip'` で即死していた問題を修正。`engine_url_to_list` ヘルパーを追加し list/str を統一処理。
+- **読み上げ誤読修正**: e2k 未インストール環境で `sanitize` / `system` / `init` がアルファベット字読みになっていた問題を修正。`WORD_KANA` 辞書に 3 語追加（`scripts/kana_dict.py`）。
+
+---
+
 ## [0.3.2] - 2026-06-02
 
 ### Added

@@ -358,15 +358,16 @@ class TestStepHook:
 
 
 class TestRunSetup:
-    def test_all_skip_returns_three_skipped(self, tmp_path):
+    def test_all_skip_returns_all_skipped(self, tmp_path):
         ctx, *_ = _make_ctx(
             tmp_path, yes=True,
-            skip_engine=True, skip_e2k=True, skip_hook=True,
+            skip_engine=True, skip_e2k=True, skip_hook=True, skip_mcp=True,
         )
         results = setup_mod.run_setup(ctx)
-        assert len(results) == 3
+        # receiver は --with-receiver 未指定で SKIPPED（opt-in 専用）
+        assert len(results) == 5
         assert all(r.status == setup_mod.STATUS_SKIPPED for r in results)
-        assert [r.step for r in results] == ["engine", "e2k", "hook"]
+        assert [r.step for r in results] == ["engine", "e2k", "hook", "mcp", "receiver"]
 
     def test_engine_error_skips_following_steps(self, tmp_path):
         """engine が ERROR(unreachable URL)→ e2k/hook は連鎖防止で SKIPPED"""
@@ -420,3 +421,376 @@ class TestInteractive:
         )
         result = setup_mod.step_engine(ctx)
         assert result.status == setup_mod.STATUS_OK
+
+
+# ---------------------------------------------------------------------------
+# step_mcp テスト
+# ---------------------------------------------------------------------------
+
+
+class TestStepMcp:
+    def test_skip_mcp_returns_skipped(self, tmp_path):
+        ctx, *_ = _make_ctx(tmp_path, yes=True, skip_mcp=True)
+        r = setup_mod.step_mcp(ctx)
+        assert r.status == setup_mod.STATUS_SKIPPED
+
+    def test_yes_only_returns_skipped(self, tmp_path):
+        """--yes 単体では MCP は skip される"""
+        ctx, *_ = _make_ctx(tmp_path, yes=True)
+        r = setup_mod.step_mcp(ctx)
+        assert r.status == setup_mod.STATUS_SKIPPED
+        assert "with-mcp" in r.message
+
+    def test_with_mcp_runs_step(self, tmp_path, monkeypatch):
+        """--yes --with-mcp では step が実行される（claude 未インストール時は WARN）"""
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: None)
+        monkeypatch.setattr(setup_mod, "_check_mcp_installed", lambda _: True)
+        ctx, *_ = _make_ctx(tmp_path, yes=True, with_mcp=True)
+        r = setup_mod.step_mcp(ctx)
+        # claude CLI が無いので WARN になるが step は実行される
+        assert r.status == setup_mod.STATUS_WARN
+        assert "claude" in r.message.lower()
+
+    def test_skip_mcp_and_with_mcp_mutually_exclusive(self, tmp_path):
+        """--skip-mcp と --with-mcp の同時指定は argparse usage error (exit 2)"""
+        import pytest
+        with pytest.raises(SystemExit) as exc_info:
+            setup_mod.main(["--skip-mcp", "--with-mcp", "--yes"])
+        assert exc_info.value.code == 2
+
+    def test_uv_sync_uses_repo_root_cwd(self, tmp_path, monkeypatch):
+        """uv sync は ctx.repo_root で実行される"""
+        calls = []
+
+        monkeypatch.setattr(setup_mod, "_check_mcp_installed", lambda _: False)
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: "/usr/bin/uv" if cmd == "uv" else None)
+
+        def fake_runner(cmd, **kwargs):
+            calls.append((cmd, kwargs.get("cwd")))
+            import types, subprocess
+            r = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            return r
+
+        ctx, cwd, _, fake_repo = _make_ctx(tmp_path, yes=True, with_mcp=True)
+        ctx.runner = fake_runner
+        setup_mod.step_mcp(ctx)
+
+        uv_cmds = [(c, cwd_) for c, cwd_ in calls if c and c[0] == "uv"]
+        assert uv_cmds, "uv sync が呼ばれなかった"
+        assert str(fake_repo) in uv_cmds[0][1], (
+            f"uv sync の cwd が repo_root でない: {uv_cmds[0][1]}"
+        )
+
+    def test_claude_mcp_add_uses_project_cwd(self, tmp_path, monkeypatch):
+        """claude mcp add は ctx.cwd で実行される"""
+        calls = []
+
+        monkeypatch.setattr(setup_mod, "_check_mcp_installed", lambda _: True)
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+        def fake_runner(cmd, **kwargs):
+            calls.append((cmd, kwargs.get("cwd")))
+            import types
+            # claude mcp get は exit 1（未登録）
+            rc = 1 if (len(cmd) > 2 and cmd[2] == "get") else 0
+            return types.SimpleNamespace(returncode=rc, stdout="", stderr="")
+
+        ctx, cwd, _, _ = _make_ctx(tmp_path, yes=True, with_mcp=True)
+        ctx.runner = fake_runner
+        r = setup_mod.step_mcp(ctx)
+        assert r.status == setup_mod.STATUS_OK
+
+        add_cmds = [(c, cwd_) for c, cwd_ in calls if c and c[0] == "claude" and len(c) > 2 and c[2] == "add"]
+        assert add_cmds, "claude mcp add が呼ばれなかった"
+        assert str(cwd) in add_cmds[0][1], (
+            f"claude mcp add の cwd が ctx.cwd でない: {add_cmds[0][1]}"
+        )
+
+    def test_already_registered_returns_warn(self, tmp_path, monkeypatch):
+        """claude mcp get が exit 0 → WARN で上書きしない"""
+        monkeypatch.setattr(setup_mod, "_check_mcp_installed", lambda _: True)
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+        def fake_runner(cmd, **kwargs):
+            import types
+            return types.SimpleNamespace(returncode=0, stdout="vvread: ...", stderr="")
+
+        ctx, *_ = _make_ctx(tmp_path, yes=True, with_mcp=True)
+        ctx.runner = fake_runner
+        r = setup_mod.step_mcp(ctx)
+        assert r.status == setup_mod.STATUS_WARN
+        assert "already registered" in r.message
+        assert "not overwriting" in r.message
+
+    # characterization tests — lock down command format before extraction to mcp_tools_install.py
+    def test_mcp_add_command_format(self, tmp_path, monkeypatch):
+        """claude mcp add の引数形式を固定する"""
+        calls = []
+        monkeypatch.setattr(setup_mod, "_check_mcp_installed", lambda _: True)
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+        def fake_runner(cmd, **kwargs):
+            calls.append((cmd, kwargs.get("cwd")))
+            import types
+            rc = 1 if (len(cmd) > 2 and cmd[2] == "get") else 0
+            return types.SimpleNamespace(returncode=rc, stdout="", stderr="")
+
+        ctx, cwd, _, fake_repo = _make_ctx(tmp_path, yes=True, with_mcp=True)
+        ctx.runner = fake_runner
+        r = setup_mod.step_mcp(ctx)
+        assert r.status == setup_mod.STATUS_OK
+        assert r.message == "registered vvread MCP server"
+
+        add_cmds = [c for c, _ in calls if c and len(c) > 2 and c[:3] == ["claude", "mcp", "add"]]
+        assert add_cmds, "claude mcp add が呼ばれなかった"
+        cmd = add_cmds[0]
+        # --transport stdio --scope local vvread -- {abs_path} mcp
+        assert "--transport" in cmd
+        assert "stdio" in cmd
+        assert "--scope" in cmd
+        assert "local" in cmd
+        assert "vvread" in cmd
+        assert str(fake_repo / "bin" / "vvread") in cmd
+        assert "mcp" in cmd
+
+
+# ---------------------------------------------------------------------------
+# _check_mcp_installed テスト
+# ---------------------------------------------------------------------------
+
+
+class TestCheckMcpInstalled:
+    """dependency gate は重い `import mcp` ではなく軽量な
+    `importlib.metadata.version('mcp')` で確認する（uv sync 直後の cold import が
+    timeout を超過して誤 WARN を出す回帰を防ぐ）。"""
+
+    def _make_repo_with_venv(self, tmp_path):
+        repo = tmp_path / "repo"
+        (repo / ".venv" / "bin").mkdir(parents=True)
+        (repo / ".venv" / "bin" / "python").write_text("#!/bin/bash\nexit 0\n")
+        (repo / ".venv" / "bin" / "python").chmod(0o755)
+        return repo
+
+    def test_uses_metadata_version_not_bare_import(self, tmp_path, monkeypatch):
+        repo = self._make_repo_with_venv(tmp_path)
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            import types
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(setup_mod.subprocess, "run", fake_run)
+
+        assert setup_mod._check_mcp_installed(repo) is True
+
+        cmd = captured["cmd"]
+        # repo_root/.venv/bin/python を使う
+        assert cmd[0] == str(repo / ".venv" / "bin" / "python")
+        # python -c "<code>" の形式
+        assert cmd[1] == "-c"
+        code = cmd[2]
+        # importlib.metadata + version("mcp") / version('mcp') を使う
+        assert "importlib.metadata" in code
+        assert ("version('mcp')" in code) or ('version("mcp")' in code)
+        # 素の import mcp を使わない（cold compile を避ける）
+        assert "import mcp" not in code
+        # timeout >= 10
+        assert captured["kwargs"].get("timeout", 0) >= 10
+
+    def test_returns_false_when_venv_python_missing(self, tmp_path):
+        repo = tmp_path / "no_venv"
+        repo.mkdir()
+        assert setup_mod._check_mcp_installed(repo) is False
+
+    def test_returns_false_on_timeout(self, tmp_path, monkeypatch):
+        repo = self._make_repo_with_venv(tmp_path)
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 10))
+
+        monkeypatch.setattr(setup_mod.subprocess, "run", fake_run)
+        assert setup_mod._check_mcp_installed(repo) is False
+
+    def test_mcp_dry_run_message_format(self, tmp_path, monkeypatch):
+        """dry-run のメッセージ形式を固定する"""
+        monkeypatch.setattr(setup_mod, "_check_mcp_installed", lambda _: True)
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+        def fake_runner(cmd, **kwargs):
+            import types
+            rc = 1 if (len(cmd) > 2 and cmd[2] == "get") else 0
+            return types.SimpleNamespace(returncode=rc, stdout="", stderr="")
+
+        ctx, _, _, fake_repo = _make_ctx(tmp_path, yes=True, with_mcp=True, dry_run=True)
+        ctx.runner = fake_runner
+        r = setup_mod.step_mcp(ctx)
+        assert r.status == setup_mod.STATUS_OK
+        assert "[dry-run]" in r.message
+        assert "claude mcp add" in r.message
+        assert "--scope" in r.message
+        assert "local" in r.message
+        assert str(fake_repo / "bin" / "vvread") in r.message
+
+    def test_interactive_yes_proceeds_with_mcp(self, tmp_path, monkeypatch):
+        """対話で Yes → MCP 登録が実行される"""
+        calls = []
+        monkeypatch.setattr(setup_mod, "_check_mcp_installed", lambda _: True)
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+        def fake_runner(cmd, **kwargs):
+            calls.append(cmd)
+            import types
+            rc = 1 if (len(cmd) > 2 and cmd[2] == "get") else 0
+            return types.SimpleNamespace(returncode=rc, stdout="", stderr="")
+
+        # yes=False、with_mcp=False、入力は "y" → prompt で Yes
+        ctx, *_ = _make_ctx(tmp_path, yes=False, with_mcp=False, in_text="y\n")
+        ctx.runner = fake_runner
+        r = setup_mod.step_mcp(ctx)
+        assert r.status == setup_mod.STATUS_OK
+        add_cmds = [c for c in calls if c and len(c) > 2 and c[:3] == ["claude", "mcp", "add"]]
+        assert add_cmds, "インタラクティブ Yes 後に claude mcp add が呼ばれなかった"
+
+    def test_interactive_no_skips_mcp(self, tmp_path, monkeypatch):
+        """対話で No → MCP 登録をスキップ"""
+        calls = []
+        monkeypatch.setattr(setup_mod, "_check_mcp_installed", lambda _: True)
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+        def fake_runner(cmd, **kwargs):
+            calls.append(cmd)
+            import types
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        ctx, *_ = _make_ctx(tmp_path, yes=False, with_mcp=False, in_text="n\n")
+        ctx.runner = fake_runner
+        r = setup_mod.step_mcp(ctx)
+        assert r.status == setup_mod.STATUS_SKIPPED
+        add_cmds = [c for c in calls if c and len(c) > 2 and c[:3] == ["claude", "mcp", "add"]]
+        assert add_cmds == [], "No 後に claude mcp add が呼ばれてしまった"
+
+
+# ---------------------------------------------------------------------------
+# step_receiver テスト (B-138/B-149)
+# ---------------------------------------------------------------------------
+
+
+class TestStepReceiver:
+    def test_yes_without_with_receiver_skipped(self, tmp_path):
+        """--yes 単体（--with-receiver なし）は即スキップ（opt-in 必要）"""
+        ctx, *_ = _make_ctx(tmp_path, yes=True)
+        r = setup_mod.step_receiver(ctx)
+        assert r.status == setup_mod.STATUS_SKIPPED
+        assert "with-receiver" in r.message
+
+    def test_interactive_yes_proceeds_with_receiver(self, tmp_path, monkeypatch):
+        """対話で Yes → with_receiver が有効化されセットアップが進む"""
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+        monkeypatch.setattr(setup_mod, "_receiver_sdk_installed", lambda _: True)
+
+        def fake_runner(cmd, **kwargs):
+            import types
+            rc = 1 if (len(cmd) > 2 and cmd[2] == "get") else 0
+            return types.SimpleNamespace(returncode=rc, stdout="", stderr="")
+
+        # 1回目の "Set up external-event receiver?" → "y"
+        # 2回目の "続けますか?" → "y"
+        import io
+        ctx, *_ = _make_ctx(tmp_path, yes=False, with_receiver=False)
+        ctx.in_stream = io.StringIO("y\ny\n")
+        ctx.runner = fake_runner
+        r = setup_mod.step_receiver(ctx)
+        assert r.status == setup_mod.STATUS_OK, r.message
+
+    def test_interactive_no_skips_receiver(self, tmp_path):
+        """対話で No → skip"""
+        import io
+        ctx, *_ = _make_ctx(tmp_path, yes=False, with_receiver=False)
+        ctx.in_stream = io.StringIO("n\n")
+        r = setup_mod.step_receiver(ctx)
+        assert r.status == setup_mod.STATUS_SKIPPED
+
+    def test_yes_with_receiver_skips_confirmation(self, tmp_path, monkeypatch):
+        """--yes --with-receiver は確認省略でそのまま進む"""
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+        monkeypatch.setattr(setup_mod, "_receiver_sdk_installed", lambda _: True)
+
+        def fake_runner(cmd, **kwargs):
+            import types
+            rc = 1 if (len(cmd) > 2 and cmd[2] == "get") else 0
+            return types.SimpleNamespace(returncode=rc, stdout="", stderr="")
+
+        ctx, *_ = _make_ctx(tmp_path, yes=True, with_receiver=True)
+        ctx.runner = fake_runner
+        r = setup_mod.step_receiver(ctx)
+        assert r.status == setup_mod.STATUS_OK, r.message
+
+    def test_with_mcp_only_does_not_register_receiver(self, tmp_path):
+        """--with-mcp だけでは receiver 登録しない"""
+        ctx, *_ = _make_ctx(tmp_path, yes=True, with_mcp=True)
+        r = setup_mod.step_receiver(ctx)
+        assert r.status == setup_mod.STATUS_SKIPPED
+
+    def test_bun_absent_is_warn(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: None)
+        ctx, *_ = _make_ctx(tmp_path, yes=True, with_receiver=True)
+        r = setup_mod.step_receiver(ctx)
+        assert r.status == setup_mod.STATUS_WARN
+        assert "bun" in r.message.lower()
+
+    def test_registers_receiver_local(self, tmp_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+        monkeypatch.setattr(setup_mod, "_receiver_sdk_installed", lambda _: True)
+
+        def fake_runner(cmd, **kwargs):
+            calls.append((cmd, kwargs.get("cwd")))
+            import types
+            rc = 1 if (len(cmd) > 2 and cmd[2] == "get") else 0
+            return types.SimpleNamespace(returncode=rc, stdout="", stderr="")
+
+        ctx, cwd, _, fake_repo = _make_ctx(tmp_path, yes=True, with_receiver=True)
+        ctx.runner = fake_runner
+        r = setup_mod.step_receiver(ctx)
+        assert r.status == setup_mod.STATUS_OK, r.message
+        add_cmds = [(c, cwd_) for c, cwd_ in calls if c and c[1:3] == ["mcp", "add"]]
+        assert add_cmds, "claude mcp add が呼ばれなかった"
+        cmd, _ = add_cmds[0]
+        assert "vvread-receiver" in cmd
+        assert "bun" in cmd
+        assert "--scope" in cmd and "local" in cmd
+        assert str(fake_repo / "receiver" / "server.ts") in cmd
+
+    def test_already_registered_no_overwrite(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+        monkeypatch.setattr(setup_mod, "_receiver_sdk_installed", lambda _: True)
+
+        def fake_runner(cmd, **kwargs):
+            import types
+            # get → exit 0 with "local" → registered_local
+            return types.SimpleNamespace(returncode=0, stdout="scope: local", stderr="")
+
+        ctx, *_ = _make_ctx(tmp_path, yes=True, with_receiver=True)
+        ctx.runner = fake_runner
+        r = setup_mod.step_receiver(ctx)
+        assert r.status == setup_mod.STATUS_WARN
+        assert "already registered" in r.message
+
+    def test_dry_run_no_side_effects(self, tmp_path, monkeypatch):
+        """--with-receiver --dry-run は bun install も登録も実行しない"""
+        calls = []
+        monkeypatch.setattr(setup_mod.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+        def fake_runner(cmd, **kwargs):
+            calls.append(cmd)
+            import types
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        ctx, *_ = _make_ctx(tmp_path, yes=True, with_receiver=True, dry_run=True)
+        ctx.runner = fake_runner
+        r = setup_mod.step_receiver(ctx)
+        assert r.status == setup_mod.STATUS_OK
+        assert "dry-run" in r.message
+        assert calls == [], f"dry-run で runner が呼ばれた: {calls}"

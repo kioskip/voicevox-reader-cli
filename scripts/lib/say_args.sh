@@ -19,10 +19,12 @@
 
 vvread_say_usage() {
   cat >&2 <<'EOF'
-Usage: vvread say <text> [--speaker N]
+Usage: vvread say <text> [--speaker N] [--queue|--no-queue]
 
   <text>          発話するテキスト(必須)
   --speaker N     話者 ID (default: VOICEVOX_SPEAKER 環境変数 or 3)
+  --queue         この発話をキューに積む（割り込まず順番に再生）
+  --no-queue      この発話を従来の preempt（割り込み）で再生
 
 設定可能な環境変数:
   VOICEVOX_ENGINE_URL   VOICEVOX Engine URL
@@ -37,9 +39,22 @@ vvread_say_parse_args() {
   TEXT=""
   # shellcheck disable=SC2034
   SPEAKER_OVERRIDE=""
+  # queue モードの per-call 上書き: "on" / "off" / "" (未指定)
+  # shellcheck disable=SC2034
+  QUEUE_OVERRIDE=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
+      --queue)
+        # shellcheck disable=SC2034
+        QUEUE_OVERRIDE="on"
+        shift
+        ;;
+      --no-queue)
+        # shellcheck disable=SC2034
+        QUEUE_OVERRIDE="off"
+        shift
+        ;;
       --speaker)
         if [ $# -lt 2 ]; then
           printf 'vvread say: --speaker requires an argument\n' >&2

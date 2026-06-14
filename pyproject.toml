@@ -1,0 +1,11 @@
+[project]
+name = "vvread"
+version = "0.1.0"
+description = "Auto-vocalize Claude Code responses via VOICEVOX"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+mcp = [
+    "mcp>=1,<2",
+]

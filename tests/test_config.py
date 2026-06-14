@@ -361,6 +361,25 @@ class TestRunConfig:
         assert path.read_text(encoding="utf-8") == original
         assert "キャンセル" in out.getvalue()
 
+    def test_interactive_engine_url_list_does_not_crash(self, tmp_path):
+        """F-116: engineUrl が list 形式（engines の legacy alias）の設定ファイルで
+        対話 config が AttributeError でクラッシュせず、保存で engines に統一され
+        engineUrl が消える。実機 claudeBot プロジェクトで発見したクラッシュの回帰。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"engineUrl": [
+            "http://127.0.0.1:50021", "http://127.0.0.1:50022",
+        ]}})
+        # 全フィールド Enter（current 維持）+ 保存 Y
+        input_text = "\n" * len(cfg.CONFIG_FIELDS) + "Y\n"
+        ctx, out, err = _make_ctx(tmp_path, tty=True, input_text=input_text)
+        rc = cfg.run_config(ctx)
+        assert rc == 0, err.getvalue()
+        data = _read_settings(path)
+        assert data["voicevox"]["engines"] == [
+            "http://127.0.0.1:50021", "http://127.0.0.1:50022",
+        ]
+        assert "engineUrl" not in data["voicevox"]
+
     def test_dry_run_does_not_write(self, tmp_path):
         path = tmp_path / "vvread.settings.json"
         _write_settings(path, {"voicevox": {"speaker": 3}})
@@ -1299,6 +1318,18 @@ class TestEnginesUnification:
         assert rc == 0
         assert "http://127.0.0.1:50021, http://127.0.0.1:50022" in out.getvalue()
 
+    def test_list_mode_engine_url_list_does_not_crash(self, tmp_path):
+        """F-116: engineUrl が list 形式（engines の legacy alias）でも
+        config --list がクラッシュせず engines 行を正しくレンダリングする。"""
+        path = tmp_path / "vvread.settings.json"
+        _write_settings(path, {"voicevox": {"engineUrl": [
+            "http://127.0.0.1:50021", "http://127.0.0.1:50022",
+        ]}})
+        ctx, out, err = _make_ctx(tmp_path, list_mode=True)
+        rc = cfg.run_config(ctx)
+        assert rc == 0, err.getvalue()
+        assert "http://127.0.0.1:50021, http://127.0.0.1:50022" in out.getvalue()
+
 
 # ---------------------------------------------------------------------------
 # B-124: voicevox.engines の config --json 導線 E2E テスト
@@ -1370,3 +1401,162 @@ class TestEnginesConfigChain:
         )
         assert r.returncode == 0
         assert "VOICEVOX_ENGINES='http://127.0.0.1:50021;http://127.0.0.1:50022'" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# --project flag テスト (B-133)
+# ---------------------------------------------------------------------------
+
+
+class TestProjectFlag:
+    """--project flag: user settings にフォールバックせず project ファイルを強制使用。"""
+
+    def test_project_scope_writes_to_project_file(self, tmp_path):
+        """--project: user settings が存在しても project ファイルに書き込む。"""
+        # user settings ファイルを作成
+        user_settings = tmp_path / "user_settings.json"
+        user_settings.write_text('{"voicevox": {"speaker": 99}}', encoding="utf-8")
+
+        project_file = tmp_path / "vvread.settings.json"
+        assert not project_file.exists()
+
+        with patch.object(cfg._stg, "user_settings_path", return_value=user_settings):
+            ctx = cfg.ConfigContext(
+                project_scope=True,
+                set_pairs=["voicevox.speaker=3"],
+                cwd=tmp_path,
+            )
+            rc = cfg.run_config(ctx)
+
+        assert rc == 0
+        assert project_file.exists(), "--project なのに project ファイルが作成されなかった"
+        data = json.loads(project_file.read_text(encoding="utf-8"))
+        assert data.get("voicevox", {}).get("speaker") == 3
+        # user settings は変更されていない
+        user_data = json.loads(user_settings.read_text(encoding="utf-8"))
+        assert user_data.get("voicevox", {}).get("speaker") == 99
+
+    def test_project_scope_creates_project_file_if_absent(self, tmp_path):
+        """--project: project ファイルが存在しない場合は新規作成する。"""
+        nonexistent_user = tmp_path / "no_user.json"
+        project_file = tmp_path / "vvread.settings.json"
+
+        with patch.object(cfg._stg, "user_settings_path", return_value=nonexistent_user):
+            ctx = cfg.ConfigContext(
+                project_scope=True,
+                set_pairs=["voicevox.speaker=5"],
+                cwd=tmp_path,
+            )
+            rc = cfg.run_config(ctx)
+
+        assert rc == 0
+        assert project_file.exists()
+        data = json.loads(project_file.read_text(encoding="utf-8"))
+        assert data.get("voicevox", {}).get("speaker") == 5
+
+    def test_project_and_user_setting_mutually_exclusive(self, tmp_path):
+        """--project と --user-setting の同時指定は argparse usage error (exit 2)。"""
+        import pytest
+        with pytest.raises(SystemExit) as exc_info:
+            cfg.main(["--project", "--user-setting", "--set", "voicevox.speaker=3"])
+        assert exc_info.value.code == 2
+
+    def test_no_project_flag_falls_back_to_user_settings(self, tmp_path):
+        """--project なし: user settings が存在する場合は user settings に書き込む（既存動作）。"""
+        user_settings = tmp_path / "user_settings.json"
+        user_settings.write_text('{"voicevox": {"speaker": 99}}', encoding="utf-8")
+
+        with patch.object(cfg._stg, "user_settings_path", return_value=user_settings):
+            ctx = cfg.ConfigContext(
+                set_pairs=["voicevox.speaker=3"],
+                cwd=tmp_path,
+            )
+            rc = cfg.run_config(ctx)
+
+        assert rc == 0
+        user_data = json.loads(user_settings.read_text(encoding="utf-8"))
+        assert user_data.get("voicevox", {}).get("speaker") == 3
+
+
+# ---------------------------------------------------------------------------
+# vvread_config_set MCP tool テスト (B-133)
+# ---------------------------------------------------------------------------
+
+import importlib.util as _importlib_util
+_MCP_AVAILABLE_CONFIG = _importlib_util.find_spec("mcp") is not None
+
+
+@pytest.mark.skipif(not _MCP_AVAILABLE_CONFIG, reason="mcp package required")
+class TestVvreadConfigSetMcpTool:
+    """mcp_server.py の vvread_config_set tool のテスト。"""
+
+    def _load_mcp_server(self):
+        spec = _importlib_util.spec_from_file_location(
+            f"mcp_server_config_{id(self)}", str(REPO / "scripts" / "mcp_server.py")
+        )
+        mod = _importlib_util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _call_tool(self, mod, **kwargs):
+        import asyncio
+        return asyncio.run(
+            mod.mcp._tool_manager.call_tool("vvread_config_set", kwargs)
+        )
+
+    def test_allowlist_excludes_engine_url(self):
+        mod = self._load_mcp_server()
+        assert "voicevox.engineUrl" not in mod._CONFIG_ALLOWLIST
+        assert "voicevox.engines" not in mod._CONFIG_ALLOWLIST
+
+    def _call_tool_expect_error(self, mod, key, value):
+        """エラーが発生することを確認するヘルパー。
+        FastMCP は _tool_manager.call_tool で ToolError を raise するため
+        try/except で捕捉する。MCP プロトコル経由では isError=true になる。
+        """
+        import asyncio
+        from mcp.server.fastmcp.exceptions import ToolError
+        with pytest.raises((ToolError, RuntimeError)):
+            asyncio.run(
+                mod.mcp._tool_manager.call_tool(
+                    "vvread_config_set", {"key": key, "value": value}
+                )
+            )
+
+    def test_rejects_disallowed_key(self, tmp_path, monkeypatch):
+        mod = self._load_mcp_server()
+        self._call_tool_expect_error(mod, "voicevox.engineUrl", "http://evil/")
+
+    def test_rejects_type_mismatch(self, tmp_path, monkeypatch):
+        mod = self._load_mcp_server()
+        self._call_tool_expect_error(mod, "voicevox.speaker", "not_a_number")
+
+    def test_rejects_out_of_range(self, tmp_path, monkeypatch):
+        mod = self._load_mcp_server()
+        self._call_tool_expect_error(mod, "voicevox.speed", "99.0")
+
+    def test_calls_config_set_with_project_flag(self, tmp_path, monkeypatch):
+        """正常系: vvread config --set KEY=VALUE --project が subprocess で呼ばれる。"""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            import types
+            return types.SimpleNamespace(returncode=0, stdout="Updated: /fake/path\n", stderr="")
+
+        mod = self._load_mcp_server()
+        mod.CWD = tmp_path
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+        import asyncio
+        asyncio.run(
+            mod.mcp._tool_manager.call_tool(
+                "vvread_config_set", {"key": "voicevox.speaker", "value": "3"}
+            )
+        )
+        assert calls, "subprocess.run が呼ばれなかった"
+        cmd = calls[-1]
+        assert "--project" in cmd, f"--project フラグが渡されなかった: {cmd}"
+        assert "config" in cmd
+        assert "--set" in cmd
+        assert any("voicevox.speaker=3" in arg for arg in cmd)

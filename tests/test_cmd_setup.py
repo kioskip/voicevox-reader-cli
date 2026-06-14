@@ -198,19 +198,20 @@ class TestDryRun:
 
 
 class TestJsonOutput:
-    def test_json_output_has_three_steps(self, tmp_path):
+    def test_json_output_has_all_steps(self, tmp_path):
         cwd, home, env = _setup_env(tmp_path)
         r = run_setup(
             "--yes", "--json",
-            "--skip-engine", "--skip-e2k", "--skip-hook",
+            "--skip-engine", "--skip-e2k", "--skip-hook", "--skip-mcp",
             env_extra=env, cwd=cwd,
         )
         assert r.returncode == 0
         payload = json.loads(r.stdout)
         assert isinstance(payload, list)
-        assert len(payload) == 3
+        # receiver は --with-receiver 未指定で SKIPPED（opt-in 専用）
+        assert len(payload) == 5
         steps = [item["step"] for item in payload]
-        assert steps == ["engine", "e2k", "hook"]
+        assert steps == ["engine", "e2k", "hook", "mcp", "receiver"]
         for item in payload:
             assert item["status"] == "SKIPPED"
 

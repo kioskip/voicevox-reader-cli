@@ -475,3 +475,44 @@ class TestDeprecatedScopeAlias:
         r = run_install("--yes", env_extra=env, cwd=cwd)
         assert r.returncode == 0
         assert (cwd / ".claude" / "settings.local.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# B-148: --with-mcp / --with-receiver / --receiver-only
+# ---------------------------------------------------------------------------
+
+
+class TestIntegrationFlags:
+    def test_with_receiver_receiver_only_mutual_exclusion(self, tmp_path):
+        """--with-receiver と --receiver-only の同時指定は argparse エラー (exit 2)"""
+        cwd, home, env = _setup_env(tmp_path)
+        r = run_install("--with-receiver", "--receiver-only", env_extra=env, cwd=cwd)
+        assert r.returncode == 2
+
+    def test_with_mcp_dry_run_no_settings_file(self, tmp_path):
+        """--with-mcp --dry-run --yes: dry-run なので settings ファイルを作らない"""
+        cwd, home, env = _setup_env(tmp_path)
+        r = run_install("--with-mcp", "--dry-run", "--yes", env_extra=env, cwd=cwd)
+        # dry-run は副作用なし
+        assert not (cwd / ".claude" / "settings.local.json").exists()
+
+    def test_receiver_only_dry_run_no_stop_hook(self, tmp_path):
+        """--receiver-only --dry-run: Stop hook は登録しない"""
+        cwd, home, env = _setup_env(tmp_path)
+        r = run_install("--receiver-only", "--dry-run", env_extra=env, cwd=cwd)
+        # Stop hook をスキップするので settings ファイルなし
+        assert not (cwd / ".claude" / "settings.local.json").exists()
+        # dry-run メッセージが出る
+        assert "dry-run" in r.stdout.lower()
+
+    def test_with_mcp_yes_registers_stop_hook(self, tmp_path):
+        """--with-mcp --yes: Stop hook は登録される（settings ファイルが作られる）"""
+        cwd, home, env = _setup_env(tmp_path)
+        r = run_install("--with-mcp", "--yes", env_extra=env, cwd=cwd)
+        # Stop hook は成功のはず
+        assert (cwd / ".claude" / "settings.local.json").exists()
+        # MCP registration は claude CLI 不在で失敗するが stop hook は成功
+        data = json.loads(
+            (cwd / ".claude" / "settings.local.json").read_text(encoding="utf-8")
+        )
+        assert "hooks" in data

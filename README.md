@@ -194,6 +194,36 @@ vvread install --scope user
 
 **`timeout: 600`（秒）を既定**とする理由: 長文応答（5000 字レベル）では合成・再生に 5 分超かかる場合があります。`async: true` で本体は待たないため、長めに取って音切れを避ける方が UX 上有利です。
 
+### 7-2. MCP サーバーとして登録する（任意）
+
+> **位置づけ**: MCP 連携は Stop hook / CLI の代替ではなく**追加機能**です。
+> `mcp` パッケージを入れなくても既存の読み上げ機能はそのまま動きます。
+
+MCP サーバーとして登録すると、Claude が長時間作業の途中で進捗・エラー・完了を
+**自ら読み上げる**ことができます。ビルドやコードレビュー中に画面監視が不要になります。
+
+追加される機能:
+- `vvread_say`: 任意のタイミングでテキストを読み上げ（即時復帰）
+- `vvread_stop`: 再生中の音声を停止
+- `vvread_status`: 再生状態を確認
+- `vvread_speakers`: 利用可能な話者一覧を取得
+- `vvread_config_set`: 読み上げ設定を変更（許可キーのみ）
+
+**インストールと登録**:
+
+```bash
+# 1. mcp パッケージをインストール（Python >=3.10 が必要）
+uv sync --extra mcp
+
+# 2. Claude Code に登録
+claude mcp add --transport stdio --scope local vvread \
+  -- /absolute/path/to/voiceClaude/bin/vvread mcp
+claude mcp list   # vvread が表示されれば OK
+```
+
+詳細な使い方は **[MCP.md](MCP.md)** を参照してください。
+外部イベント（CI 完了・監視アラート等）を声で受け取る**チャネル連携**（実験的）も [MCP.md](MCP.md) の「チャネル連携」を参照してください。
+
 ---
 
 ## 8. トラブルシューティング

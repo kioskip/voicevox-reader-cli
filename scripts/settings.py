@@ -240,6 +240,19 @@ def normalize_engines(engines: list) -> Tuple[List[str], List[str]]:
     return result, errors
 
 
+def engine_url_to_list(value: Any) -> List[str]:
+    """legacy engineUrl (str | list[str]) を engines 候補の list に変換する。
+
+    正規化（trailing slash 除去 / 重複除去 / scheme 検証）は normalize_engines に
+    委ねる。str → [str] / list → そのまま / その他の型 → []。
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        return [value]
+    return []
+
+
 def _validate_engines(
     engines: list,
     parse_errors: List[Tuple[str, str]],
@@ -279,9 +292,9 @@ def canonicalize_settings_dict(data: Dict[str, Any]) -> Dict[str, Any]:
         # engines 優先: engineUrl を削除
         vv.pop("engineUrl", None)
     elif has_engine_url:
-        # engineUrl のみ存在: engines に変換して engineUrl を削除
-        url = engine_url_val.rstrip("/") if isinstance(engine_url_val, str) else ""
-        vv["engines"] = [url]
+        # engineUrl のみ存在: engines に変換して engineUrl を削除（str / list 両対応）。
+        # 正規化（trailing slash / 重複 / scheme）は下の normalize_engines に委ねる。
+        vv["engines"] = engine_url_to_list(engine_url_val)
         vv.pop("engineUrl", None)
     # 両方なし: 何もしない → return
 
@@ -443,32 +456,42 @@ def load(
         # project
         if resolved is None and key in project_flat:
             raw = project_flat[key]
-            coerced, ok = _coerce(raw, target_type)
-            if ok:
-                resolved = ResolvedValue(
-                    coerced, Origin("project", str(project_path))
-                )
+            if key == "voicevox.engineUrl" and isinstance(raw, list):
+                # legacy engineUrl の list 形式は engines の別名。list のまま保持し、
+                # _coerce による str() 化（["a","b"] → "['a', 'b']"）を避ける。
+                # engines への正規化は post-processing が行う。
+                resolved = ResolvedValue(raw, Origin("project", str(project_path)))
             else:
-                settings.parse_errors.append(
-                    (str(project_path),
-                     f"{key}: value {raw!r} is not "
-                     f"{target_type.__name__}")
-                )
+                coerced, ok = _coerce(raw, target_type)
+                if ok:
+                    resolved = ResolvedValue(
+                        coerced, Origin("project", str(project_path))
+                    )
+                else:
+                    settings.parse_errors.append(
+                        (str(project_path),
+                         f"{key}: value {raw!r} is not "
+                         f"{target_type.__name__}")
+                    )
 
         # user
         if resolved is None and key in user_flat:
             raw = user_flat[key]
-            coerced, ok = _coerce(raw, target_type)
-            if ok:
-                resolved = ResolvedValue(
-                    coerced, Origin("user", str(user_path))
-                )
+            if key == "voicevox.engineUrl" and isinstance(raw, list):
+                # legacy engineUrl の list 形式は engines の別名（project 側と同様）。
+                resolved = ResolvedValue(raw, Origin("user", str(user_path)))
             else:
-                settings.parse_errors.append(
-                    (str(user_path),
-                     f"{key}: value {raw!r} is not "
-                     f"{target_type.__name__}")
-                )
+                coerced, ok = _coerce(raw, target_type)
+                if ok:
+                    resolved = ResolvedValue(
+                        coerced, Origin("user", str(user_path))
+                    )
+                else:
+                    settings.parse_errors.append(
+                        (str(user_path),
+                         f"{key}: value {raw!r} is not "
+                         f"{target_type.__name__}")
+                    )
 
         # default
         if resolved is None:
@@ -502,10 +525,25 @@ def load(
                 validated[0], Origin("derived", "voicevox.engines")
             )
     else:
-        engine_url = settings.values["voicevox.engineUrl"].value
+        # engines 未設定・空 → engineUrl(str | list) から派生。list は engines の別名。
+        eu_rv = settings.values["voicevox.engineUrl"]
+        derived, derr = normalize_engines(engine_url_to_list(eu_rv.value))
+        for e in derr:
+            settings.parse_errors.append(
+                (eu_rv.origin.detail or "", f"voicevox.engineUrl: {e}")
+            )
+        if not derived:
+            # 有効 URL ゼロ（空 list / 全件不正等）: default engine へフォールバック。
+            # load は例外を投げず parse_errors に収集する契約を維持する。
+            derived = [str(SCHEMA["voicevox.engineUrl"][0])]
         settings.values["voicevox.engines"] = ResolvedValue(
-            [engine_url.rstrip("/")], Origin("derived", "voicevox.engineUrl")
+            derived, Origin("derived", "voicevox.engineUrl")
         )
+        # engineUrl が list だった場合は単一 str に正規化して残す（下流の str 前提を守る）。
+        if eu_rv.origin.source != "env" and not isinstance(eu_rv.value, str):
+            settings.values["voicevox.engineUrl"] = ResolvedValue(
+                derived[0], Origin("derived", "voicevox.engines")
+            )
 
     return settings
 

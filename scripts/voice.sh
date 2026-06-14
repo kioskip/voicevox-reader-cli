@@ -41,6 +41,14 @@ LOG_NAME="voice"
 # shellcheck source=./lib/log.sh
 source "${VVREAD_SCRIPTS_DIR:-$(dirname "$0")}/lib/log.sh"
 
+# キュー再生モード (B-015): stop が queue 全停止も担うため source する
+# shellcheck source=./lib/queue.sh
+source "${VVREAD_SCRIPTS_DIR:-$(dirname "$0")}/lib/queue.sh"
+
+# duration parser (FB-4): mute の duration 解析。cmd/queue.sh と共有
+# shellcheck source=./lib/duration.sh
+source "${VVREAD_SCRIPTS_DIR:-$(dirname "$0")}/lib/duration.sh"
+
 
 # ===== ヘルパー(状態の読み書き) =====
 
@@ -76,22 +84,6 @@ _is_alive_pid() {
   [ -n "$1" ] && kill -0 "$1" 2>/dev/null
 }
 
-# duration 文字列(30s / 5m / 2h)を秒に変換。失敗時は非ゼロ
-_parse_duration() {
-  local raw="$1"
-  if [[ "${raw}" =~ ^([0-9]+)([smh])$ ]]; then
-    local n="${BASH_REMATCH[1]}"
-    case "${BASH_REMATCH[2]}" in
-      s) echo "${n}" ;;
-      m) echo $((n * 60)) ;;
-      h) echo $((n * 3600)) ;;
-    esac
-  else
-    return 1
-  fi
-}
-
-
 # ===== ヘルパー(状態を行で出力) =====
 
 _print_state_disabled() {
@@ -116,6 +108,18 @@ _print_state_idle() {
 # ===== サブコマンド =====
 
 cmd_stop() {
+  # queue モード時は全停止（pending 削除 + drainer へ token 付き halt signal）も担う。
+  # 順序: stop.request → pending 削除 → lock 解放（ここまで queue_stop_request 内の
+  # mutation lock）→ player kill（_stop_current）。queue mode flag は維持。
+  if [ -d "${STATE_DIR}/queue" ]; then
+    vvread_queue_dirs_init
+    # wedge した drainer は stop signal を読まない。自動 reset はせず WARN のみ
+    # （破壊操作は明示 `vvread queue reset` に限定）。pending 削除前に判定する。
+    if [ "$(vvread_queue_lock_class "${QDIR}")" = "wedge" ]; then
+      printf 'WARN: queue drainer appears wedged. Run `vvread queue reset` to force recovery.\n' >&2
+    fi
+    vvread_queue_stop_request "${QDIR}" || true
+  fi
   _stop_current
   log_info "stop"
   echo "stopped"
@@ -128,7 +132,7 @@ cmd_mute() {
     exit 1
   fi
   local sec
-  if ! sec=$(_parse_duration "${arg}"); then
+  if ! sec=$(vvread_parse_duration "${arg}"); then
     echo "duration の形式が不正: ${arg} (例: 30s, 5m, 2h)" >&2
     exit 1
   fi
