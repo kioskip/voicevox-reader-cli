@@ -201,6 +201,51 @@ class TestProjectUserCascade:
         assert str(user_path) in s.sources
         assert str(project_path) in s.sources
 
+    def test_project_path_from_claude_project_dir(self, tmp_path):
+        """CLAUDE_PROJECT_DIR が設定されていれば cwd より優先して project settings を解決する。"""
+        proj_dir = tmp_path / "myproject"
+        proj_dir.mkdir()
+        _write_json(proj_dir / "vvread.settings.json", {"voicevox": {"speaker": 7}})
+        s = settings_module.load(
+            cwd=Path("/"),                          # cwd は無関係なパス
+            env={"CLAUDE_PROJECT_DIR": str(proj_dir)},
+            user_path=tmp_path / "no_user.json",    # ユーザー設定なし
+        )
+        assert s.values["voicevox.speaker"].value == 7
+        assert s.values["voicevox.speaker"].origin.source == "project"
+
+    def test_vvread_project_settings_wins_over_claude_project_dir(self, tmp_path):
+        """VVREAD_PROJECT_SETTINGS が CLAUDE_PROJECT_DIR より優先される。"""
+        explicit_dir = tmp_path / "explicit"
+        explicit_dir.mkdir()
+        explicit_file = explicit_dir / "explicit.json"
+        _write_json(explicit_file, {"voicevox": {"speaker": 42}})
+
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        _write_json(other_dir / "vvread.settings.json", {"voicevox": {"speaker": 99}})
+
+        s = settings_module.load(
+            cwd=Path("/"),
+            env={
+                "VVREAD_PROJECT_SETTINGS": str(explicit_file),
+                "CLAUDE_PROJECT_DIR": str(other_dir),
+            },
+            user_path=tmp_path / "no_user.json",
+        )
+        assert s.values["voicevox.speaker"].value == 42
+
+    def test_claude_project_dir_missing_settings_file_no_exception(self, tmp_path):
+        """CLAUDE_PROJECT_DIR に vvread.settings.json がなくても例外にならずdefaultにフォールバック。"""
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        s = settings_module.load(
+            cwd=Path("/"),
+            env={"CLAUDE_PROJECT_DIR": str(empty_dir)},
+            user_path=tmp_path / "no_user.json",
+        )
+        assert s.values["voicevox.speaker"].origin.source == "default"
+
 
 # ---------------------------------------------------------------------------
 # JSONC

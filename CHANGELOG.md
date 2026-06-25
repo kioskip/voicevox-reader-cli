@@ -17,6 +17,20 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.4.1] - 2026-06-24
+
+### Fixed
+- **Stop hook 二重発火** (F-119): user/project 両スコープに hook が登録されていた場合、同一ターンで `on_stop.sh` が 2 回起動し二重読み上げが発生していた問題を修正。`on_stop.sh` に dispatch dedup（marker + mkdir lock, window=3s, key=`CLAUDE_PROJECT_DIR+text`）を追加。
+- **Stop hook が project 設定を読めない問題** (F-117): Stop hook 経由の読み上げで project の `vvread.settings.json` が認識されず default にフォールバックしていた問題を修正。`settings.py::load()` に `CLAUDE_PROJECT_DIR` サポートを追加（優先順: `VVREAD_PROJECT_SETTINGS` > `CLAUDE_PROJECT_DIR` > cwd）。
+- **on_stop.sh のエンジン health check がプロジェクト設定より前に実行される問題** (F-121): `on_stop.sh` が `settings.py` を eval する前にエンジン疎通チェックを行っていたため、project の engine URL が反映されず早期 exit することがあった問題を修正。state checks 通過後・log.sh source 前に `settings.py env` を eval するよう変更。
+- **ログ改行文字の混入** (R-118 派生): `on_stop.sh` がトランスクリプトから取得したテキストに改行が含まれる場合、ログ行が分断される問題を修正。
+
+### Changed
+- `pyproject.toml` に `[dependency-groups] dev = ["pytest>=7.0"]` を追加。`uv sync --group dev` で pytest が入るようになった（R-118）。
+- queue drain play ログに `engine=URL` を追加。2 エンジン構成時に再生エンジンが特定できるようになった（現状 ENGINES[0] 固定; multi-engine drain は B-152 で対応予定）。
+
+---
+
 ## [0.4.0] - 2026-06-14
 
 ### Added

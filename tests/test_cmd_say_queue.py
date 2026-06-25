@@ -441,6 +441,85 @@ class TestSpinAbort:
         assert "つぎのこえ" in _audio_query_texts(voicevox_mock["state"])
 
 
+# ---------------------------------------------------------------------------
+# enqueue ログ text_from= フォーマット
+# ---------------------------------------------------------------------------
+
+
+class TestEnqueueLogFormat:
+    """say enqueue ログの text_from= 値に改行・CRLF が埋め込まれないことを確認。"""
+
+    @staticmethod
+    def _read_log(tmp_path: Path) -> str:
+        log_file = tmp_path / "log" / "speak.log"
+        return log_file.read_text(encoding="utf-8") if log_file.exists() else ""
+
+    def _assert_enqueue_line_is_single(self, log: str, label: str) -> None:
+        """say enqueue 行と text_from= が同じ行に収まることを確認する。"""
+        # ログを改行で分割し、両方のトークンを含む行を探す
+        lines = log.split("\n")
+        combined = [l for l in lines if "say enqueue" in l and "text_from=" in l]
+        assert combined, (
+            f"[{label}] 'say enqueue' と 'text_from=' が同一行に見つからない。\n"
+            f"ログ:\n{log!r}"
+        )
+
+    def test_text_from_strips_leading_newline(self, voicevox_mock, tmp_path):
+        """TEXT が改行で始まっても text_from= の後に改行が埋め込まれない。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        _enable_queue(env)
+
+        r = run_say("\nHello", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        log = self._read_log(tmp_path)
+        self._assert_enqueue_line_is_single(log, "LF")
+
+    def test_text_from_strips_crlf(self, voicevox_mock, tmp_path):
+        """TEXT が CRLF を含んでも text_from= の後に改行が埋め込まれない。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        _enable_queue(env)
+
+        r = run_say("\r\nHello", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        log = self._read_log(tmp_path)
+        self._assert_enqueue_line_is_single(log, "CRLF")
+
+
+# ---------------------------------------------------------------------------
+# drain play ログ（engine 情報）
+# ---------------------------------------------------------------------------
+
+
+class TestDrainLog:
+    def test_drain_play_log_includes_engine(self, voicevox_mock, tmp_path):
+        """queue drain play ログに engine=URL が含まれる"""
+        bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        _enable_queue(env)
+
+        r = run_say("ドレインログテスト", env_extra=env)
+        assert r.returncode == 0, r.stderr
+
+        log_file = tmp_path / "log" / "speak.log"
+        wait_for_file(log_file)
+        log = log_file.read_text()
+
+        drain_lines = [l for l in log.splitlines() if "say drain play" in l]
+        assert drain_lines, f"say drain play が見つからない\n{log}"
+        assert any("engine=" in l for l in drain_lines), (
+            f"drain play log に engine= が含まれない: {drain_lines}"
+        )
+
+
 def _clean_env_for(env: dict) -> dict:
     """run_say と同じ _clean_env 相当を Popen 用に組み立てる。"""
     import os

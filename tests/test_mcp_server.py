@@ -1,10 +1,11 @@
 """tests/test_mcp_server.py - vvread MCP server のテスト (B-110)
 
 テストを 2 グループに分ける:
-  CLI dispatch / mcp.sh テスト: mcp package 不要（uv sync のみで実行可能）
-  MCP SDK テスト: mcp package 必要（uv sync --extra mcp）
+  CLI dispatch / mcp.sh テスト: ほとんど mcp 不要だが、test_vvread_mcp_subcommand_dispatches は mcp 必須
+  MCP SDK テスト: mcp package 必須（uv sync --group dev --extra mcp）
                   @pytest.mark.skipif(_MCP_AVAILABLE) でスキップ分岐
                   ※ モジュールレベルの importorskip は全クラスをスキップしてしまうため使わない
+  ※ 標準テストコマンドは --extra mcp 込みのため、skipif なしで両グループを実行可能
 
 非回帰目的: mcp package 未導入状態で既存 CLI が壊れないことも確認。
 """
@@ -123,6 +124,8 @@ def _absent_mcp_env(tmp_path: Path) -> dict:
 class TestMcpShDispatch:
     """bin/vvread mcp → mcp.sh のディスパッチと Python 解決を確認する。"""
 
+    # This dispatch test starts `bin/vvread mcp`, so the mcp extra must be installed.
+    # Standard test command: uv sync --group dev --extra mcp && uv run --group dev --extra mcp pytest tests/ -v
     def test_vvread_mcp_subcommand_dispatches(self, tmp_path):
         """bin/vvread mcp が mcp.sh を経由して MCP server を起動すること。
 

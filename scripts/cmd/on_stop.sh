@@ -93,6 +93,12 @@ if [ -f "${STATE_DIR}/mute_until" ]; then
   fi
 fi
 
+# ===== settings 解決 =====
+
+# settings.py で設定を一括解決(env > project > user > default)
+# log.sh source より前に eval することで log.level も反映される(F-121)
+eval "$("${PYTHON}" "${VVREAD_SCRIPTS_DIR}/settings.py" env 2>/dev/null || true)"
+
 # ===== logger + notifier =====
 
 # shellcheck disable=SC2034
@@ -104,7 +110,7 @@ source "${VVREAD_SCRIPTS_DIR}/lib/notify.sh"
 
 # ===== VOICEVOX Engine health check =====
 
-# S-008: VOICEVOX_ENGINE_URL (settings.py 解決) → VOICEVOX_ENGINE (legacy) の順で参照
+# S-008: settings.py eval 済み → VOICEVOX_ENGINE_URL → VOICEVOX_ENGINE (legacy) の順で参照
 _engine_base="${VOICEVOX_ENGINE_URL:-${VOICEVOX_ENGINE:-http://localhost:50021}}"
 _engine_base="${_engine_base%/}"
 ENGINE_URL="${_engine_base}/version"
@@ -140,6 +146,70 @@ fi
 if [ -z "${LAST_TEXT}" ]; then
   # transcript が無い / 空 / エラーで取れなかった → silent exit 0
   exit 0
+fi
+
+# ===== dispatch dedup =====
+
+# Stop hook の user/project scope 二重起動を抑止する粗い dedup。
+# turn id ベースの厳密 dedup ではない。
+# 注: lock が crash 等で残留した場合 acquired=0 → dispatch 継続（fail-open）。
+#     < 1ms 保持なので実運用上の残留確率は極めて低い。
+_dispatch_dedup() {
+  local marker="${1}" lock="${2}" text_key="${3}" now_s="${4}"
+
+  # lock 取得（spin, 最大 1s = 10×100ms）
+  # acquired フラグで取得成功を追跡: mkdir 成功だけが「自分が所有者」の証拠
+  local acquired=0 i=0
+  while [ "${i}" -lt 10 ]; do
+    if mkdir "${lock}" 2>/dev/null; then acquired=1; break; fi
+    sleep 0.1
+    i=$(( i + 1 ))
+  done
+  if [ "${acquired}" -eq 0 ]; then
+    log_info "dispatch_lock_timeout level=warn action=dedup_disabled"
+    return 0  # dispatch 継続
+  fi
+
+  local result=0  # 0=dispatch, 1=dedup
+  if [ -f "${marker}" ]; then
+    local raw
+    raw=$(cat "${marker}" 2>/dev/null) || raw=""
+    local last_s="${raw%% *}"
+    local last_key="${raw#* }"
+    case "${last_s}" in ''|*[!0-9]*) last_s=0 ;; esac
+    local elapsed=$(( now_s - last_s ))
+    if [ "${elapsed}" -lt 3 ] && [ "${last_key}" = "${text_key}" ]; then
+      log_info "dispatch_dedup elapsed=${elapsed}s"
+      result=1
+    fi
+  fi
+
+  if [ "${result}" -eq 0 ]; then
+    printf '%s %s\n' "${now_s}" "${text_key}" \
+      > "${marker}.tmp.$$" \
+      && mv -f "${marker}.tmp.$$" "${marker}" \
+      || log_info "dispatch_marker_write_failed level=warn"
+  fi
+
+  rmdir "${lock}" 2>/dev/null || true
+  return "${result}"
+}
+
+# project scope + text の fingerprint（プロジェクト跨ぎ誤 dedup を防ぐ）
+_dedup_scope="${CLAUDE_PROJECT_DIR:-unknown-project}"
+_text_key=$(printf '%s\037%s' "${_dedup_scope}" "${LAST_TEXT}" \
+  | cksum | cut -d' ' -f1,2) || _text_key=""
+_now_s=$(date +%s)
+
+if [ -z "${_text_key}" ]; then
+  log_info "dispatch_dedup_key_failed level=warn action=dispatch"
+else
+  if ! _dispatch_dedup \
+      "${STATE_DIR}/on_stop_last_dispatch" \
+      "${STATE_DIR}/on_stop_dispatch.lock" \
+      "${_text_key}" "${_now_s}"; then
+    exit 0
+  fi
 fi
 
 # ===== 発話 =====
