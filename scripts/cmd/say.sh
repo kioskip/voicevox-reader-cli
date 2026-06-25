@@ -171,7 +171,9 @@ _vvread_drain_one_entry() {
       return 4
     fi
     vvread_queue_progress "${QDIR}" "${DRAINER_TOKEN}"  # 実処理進捗（synth 完了）
-    log_info "say drain play chunk=$((idx + 1))/${total} speaker=${espk}"
+    # 注: drain は現状 ENGINES[0] 固定。multi-engine drain は別タスク。
+    _engine="${ENGINES[0]:-unknown}"
+    log_info "say drain play chunk=$((idx + 1))/${total} speaker=${espk} engine=${_engine}"
     prc=0
     vvread_say_play_chunk "${idx}" "${wav}" "${PID_FILE}" "${total}" || prc=$?
     rm -f "${wav}"
@@ -294,7 +296,11 @@ if [ "${QUEUE_MODE}" = "1" ]; then
 
   _submit_rc=0
   vvread_queue_submit "${SAY_SOURCE}" "${SPEAKER}" "${TEXT}" || _submit_rc=$?
-  log_info "say enqueue source=${SAY_SOURCE} speaker=${SPEAKER} rc=${_submit_rc} text_chars=${#TEXT} text_from=${TEXT:0:10}"
+  _text_preview="${TEXT:0:10}"
+  _text_preview="${_text_preview//$'\n'/ }"
+  _text_preview="${_text_preview//$'\r'/}"
+  _text_preview="${_text_preview//$'\t'/ }"
+  log_info "say enqueue source=${SAY_SOURCE} speaker=${SPEAKER} rc=${_submit_rc} text_chars=${#TEXT} text_from=${_text_preview}"
 
   # drainer になれれば drain、なれなければ既存 drainer に委ねて即終了。
   # acquire 失敗時は heartbeat-stale な drainer（生存だが進捗なし）を回収して再挑戦。

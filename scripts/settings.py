@@ -395,6 +395,8 @@ def load(
     if project_path is None:
         if env.get("VVREAD_PROJECT_SETTINGS"):
             project_path = Path(env["VVREAD_PROJECT_SETTINGS"])
+        elif env.get("CLAUDE_PROJECT_DIR"):
+            project_path = project_settings_path(Path(env["CLAUDE_PROJECT_DIR"]))
         else:
             project_path = project_settings_path(cwd)
 
