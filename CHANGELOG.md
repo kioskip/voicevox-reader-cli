@@ -17,6 +17,22 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.4.2] - 2026-06-26
+
+### Added
+- **機密情報マスク** (B-127): `sanitize.py` パイプラインに `mask_secrets()` を追加。APIキー (`sk-*` / `ghp_*` / `gho_*` / `github_pat_*`) および `password=` / `token=` / `api_key:` / `authorization: Bearer TOKEN` 等のキーワード＋値パターンを `[機密情報省略]` に置換してから VOICEVOX に送信する。
+
+### Changed
+- **SSRF 対策インフラを追加** (F-113): `fetch_url.py` に `strict_ssrf=False`（デフォルト）/ `strict_ssrf=True`（将来の MCP 向け）の2フェッチパスを実装。デフォルトは既存動作を維持し `vvread url http://localhost:...` を引き続き許可。`strict_ssrf=True` 時はカスタム `_NoAutoRedirectHandler` でリダイレクト先を事前検証し、`_check_ssrf()` で非グローバルIPをブロックする。
+
+### Fixed
+- **dispatch dedup serial 二重発火** (F-122): `on_stop.sh` が `say.sh`（同期実行）に 3 秒以上かかると dedup window が切れて同一テキストが再度発話される問題を修正。`say.sh` 完了直後に dispatch marker を現在時刻で refresh することで window を「完了から 3 秒」に延長する。concurrent プロセスが別テキストのマーカーを書き込んでいた場合は上書きしない。
+
+### Security
+- `doc/03-config.md` に `voicevox.engines` 外部 URL 設定時の信頼モデル警告を追記 (B-128)。project-level 設定はリポジトリに取り込まれるため信頼できるリポジトリにのみ置くよう注意喚起。
+
+---
+
 ## [0.4.1] - 2026-06-24
 
 ### Fixed

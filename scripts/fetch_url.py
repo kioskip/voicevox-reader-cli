@@ -8,11 +8,14 @@ Usage:
 URL に fragment (#id) が含まれる場合、該当要素から本文収集を開始する。
 
 SSRF注記:
-    初回実装はローカルCLIでユーザーが明示指定する用途のため localhost/LAN内URLを禁止しない。
-    将来 Claude Code / MCP 等の外部入力から自動実行する場合は SSRF 対策（プライベートIPブロック等）が必要。
+    `vvread url` はユーザーが明示指定する CLI 専用コマンドのため、デフォルトでは
+    localhost/LAN内URLを禁止しない（strict_ssrf=False）。
+    将来 MCP 等の外部入力から自動実行する場合は fetch_url(url, strict_ssrf=True) を渡すこと。
 """
 
+import ipaddress
 import re
+import socket
 import sys
 import urllib.error
 import urllib.parse
@@ -22,6 +25,7 @@ from typing import List, Optional
 
 FETCH_TIMEOUT_SEC: float = 10.0
 MAX_RESPONSE_BYTES: int = 2 * 1024 * 1024  # 2 MiB
+MAX_REDIRECTS: int = 5
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 _ALLOWED_CONTENT_TYPES = frozenset({"text/html", "text/plain"})
 _SKIP_TAGS = frozenset(
@@ -147,49 +151,139 @@ class _TextExtractor(HTMLParser):
         return " ".join(self._title_parts).strip()
 
 
-def _validate_url(url: str) -> None:
-    """URLのschemeとuserinfoを検証。不正なら RuntimeError を raise。"""
+def _is_private_ip(ip_str: str) -> bool:
+    """グローバルユニキャスト以外（loopback / private / link-local 等）なら True。"""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return not ip.is_global
+    except ValueError:
+        return False
+
+
+def _check_ssrf(hostname: str) -> None:
+    """ホスト名を解決して非グローバルアドレスをブロックする。
+    解決不能なホスト名は拒否（不明な送信先へ接続しない）。
+    strict_ssrf=True 時のみ呼ばれる。
+
+    既知制限: getaddrinfo() と opener.open() が別タイミングで DNS 解決するため TOCTOU が残る。
+    DNS rebinding 攻撃に対して厳密な保護は提供しない。
+    MCP 等の本番外部入力経路で有効化する前にこの制限を解消すること（現時点では呼び出し元なし）。
+    """
+    if not hostname:
+        raise RuntimeError("empty hostname is not allowed")
+    try:
+        results = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as e:
+        raise RuntimeError(f"hostname resolution failed: {hostname!r}: {e}") from e
+    for *_, sockaddr in results:
+        ip_str = sockaddr[0]
+        if _is_private_ip(ip_str):
+            raise RuntimeError(
+                f"SSRF blocked: {hostname!r} resolves to a non-global address ({ip_str})"
+            )
+
+
+class _RedirectException(Exception):
+    """カスタム redirect handler が自動追従を止めるために raise する例外。"""
+    def __init__(self, url: str, code: int) -> None:
+        self.url = url
+        self.code = code
+
+
+class _NoAutoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """redirect を自動追従せず _RedirectException を raise する。
+    呼び出し側で URL を検証してから手動で再リクエストする設計。
+    """
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise _RedirectException(newurl, code)
+
+
+def _validate_url(url: str, *, check_ssrf: bool = False) -> None:
+    """URLのscheme・userinfo・（オプションで）SSRF を検証。不正なら RuntimeError を raise。"""
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in _ALLOWED_SCHEMES:
         raise RuntimeError(f"unsupported URL scheme: {parsed.scheme!r} (http/https only)")
     if "@" in parsed.netloc:
         raise RuntimeError("URL with userinfo (user:password@host) is not allowed")
+    if check_ssrf:
+        _check_ssrf(parsed.hostname or "")
 
 
-def _validate_redirect_url(url: str) -> None:
-    """redirect後のURLのschemeを検証。"""
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme not in _ALLOWED_SCHEMES:
-        raise RuntimeError(f"redirect to unsupported scheme: {parsed.scheme!r}")
+def _read_response(resp) -> tuple:
+    """レスポンスから (mime, header_charset, raw) を読み取る。"""
+    content_type_header = resp.headers.get("Content-Type", "")
+    mime = content_type_header.split(";")[0].strip().lower()
+    if mime and mime not in _ALLOWED_CONTENT_TYPES:
+        raise RuntimeError(
+            f"unsupported Content-Type: {mime!r} (text/html or text/plain only)"
+        )
+    header_charset = resp.headers.get_content_charset()
+    raw = resp.read(MAX_RESPONSE_BYTES + 1)
+    return mime, header_charset, raw
 
 
-def fetch_url(url: str) -> str:
-    """URLからWebページを取得し本文テキストを返す。失敗時は RuntimeError を raise。"""
-    _validate_url(url)
-
-    # fragment を取り出す(urllib はサーバーに送らないため手動で取得)
-    fragment = urllib.parse.urlsplit(url).fragment or None
-
+def _fetch_standard(url: str) -> tuple:
+    """標準的な urllib.request.urlopen でフェッチ（既存テストの mock ポイント）。
+    redirect は urlopen が自動追従するが、完了後に scheme のみ検証する。
+    CLI ユーザーが URL を明示指定する用途向け（strict_ssrf=False 時に使用）。
+    """
     req = urllib.request.Request(url, headers={"User-Agent": "vvread/1.0 (URL reader)"})
     try:
         with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_SEC) as resp:  # noqa: S310
-            # redirect後URLのscheme検証
+            # redirect 後の scheme 検証（scheme downgrade 防止）
             redirect_url = resp.geturl()
-            _validate_redirect_url(redirect_url)
-
-            # Content-Typeをbody読み込み前に検証
-            content_type_header = resp.headers.get("Content-Type", "")
-            mime = content_type_header.split(";")[0].strip().lower()
-            if mime and mime not in _ALLOWED_CONTENT_TYPES:
-                raise RuntimeError(f"unsupported Content-Type: {mime!r} (text/html or text/plain only)")
-
-            # charsetはbody読み込み後に meta フォールバックする可能性があるため先に None で取得
-            header_charset = resp.headers.get_content_charset()
-            raw = resp.read(MAX_RESPONSE_BYTES + 1)
+            if redirect_url != url:
+                _validate_url(redirect_url)
+            return _read_response(resp)
     except urllib.error.URLError as e:
         raise RuntimeError(f"URL error: {e}") from e
     except (TimeoutError, OSError) as e:
         raise RuntimeError(f"connection error: {e}") from e
+
+
+def _fetch_strict_ssrf(url: str) -> tuple:
+    """SSRF 防御付きフェッチ（strict_ssrf=True 時に使用）。
+    カスタム redirect handler で自動追従を止め、各 redirect 先を SSRF 検証してから再リクエストする。
+    将来 MCP 等の外部入力から呼ぶ場合はこのパスを使うこと。
+    """
+    opener = urllib.request.build_opener(_NoAutoRedirectHandler)
+    current_url = url
+
+    for _ in range(MAX_REDIRECTS + 1):
+        req = urllib.request.Request(
+            current_url, headers={"User-Agent": "vvread/1.0 (URL reader)"}
+        )
+        try:
+            with opener.open(req, timeout=FETCH_TIMEOUT_SEC) as resp:
+                return _read_response(resp)
+        except _RedirectException as exc:
+            redirect_url = exc.url
+            _validate_url(redirect_url, check_ssrf=True)
+            current_url = redirect_url
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"URL error: {e}") from e
+        except (TimeoutError, OSError) as e:
+            raise RuntimeError(f"connection error: {e}") from e
+
+    raise RuntimeError(f"too many redirects (max {MAX_REDIRECTS})")
+
+
+def fetch_url(url: str, *, strict_ssrf: bool = False) -> str:
+    """URLからWebページを取得し本文テキストを返す。失敗時は RuntimeError を raise。
+
+    strict_ssrf=True の場合、localhost / 内部 IP へのアクセスをブロックする。
+    デフォルト(False)は CLI 手動実行向けで内部 IP も許可する。
+    将来 MCP 等の外部入力から呼ぶ場合は strict_ssrf=True を渡すこと。
+    """
+    _validate_url(url, check_ssrf=strict_ssrf)
+
+    # fragment を取り出す(urllib はサーバーに送らないため手動で取得)
+    fragment = urllib.parse.urlsplit(url).fragment or None
+
+    if strict_ssrf:
+        mime, header_charset, raw = _fetch_strict_ssrf(url)
+    else:
+        mime, header_charset, raw = _fetch_standard(url)
 
     if len(raw) > MAX_RESPONSE_BYTES:
         raise RuntimeError(

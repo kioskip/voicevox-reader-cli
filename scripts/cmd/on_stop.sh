@@ -222,4 +222,20 @@ log_info "dispatch_say chars=${#LAST_TEXT}"
 # marker 更新・eviction・stale 判定は lib/queue.sh::vvread_queue_submit に集約。
 VVREAD_SAY_SOURCE=hook "${VVREAD_SCRIPTS_DIR}/cmd/say.sh" "${LAST_TEXT}" >/dev/null 2>&1 || true
 
+# say 完了後に marker を更新し "完了から3秒" で dedup 窓を延長（serial 二重発火対策）
+# say の成否によらず refresh する（hook は retry 機構ではない）
+# concurrent プロセスが別テキストの marker を書き込んでいた場合は上書きしない
+# tmp+mv で原子的に書く（同一 key の refresh なので mkdir lock は不要）
+if [ -n "${_text_key}" ]; then
+  _raw_marker=$(cat "${STATE_DIR}/on_stop_last_dispatch" 2>/dev/null || true)
+  _cur_key="${_raw_marker#* }"  # timestamp を除いた残り（_dispatch_dedup と同じ parsing）
+  if [ "${_cur_key}" = "${_text_key}" ]; then
+    printf '%s %s\n' "$(date +%s)" "${_text_key}" \
+      > "${STATE_DIR}/on_stop_last_dispatch.tmp.$$" \
+      && mv -f "${STATE_DIR}/on_stop_last_dispatch.tmp.$$" \
+               "${STATE_DIR}/on_stop_last_dispatch" \
+      || log_info "dispatch_marker_refresh_failed level=warn"
+  fi
+fi
+
 exit 0

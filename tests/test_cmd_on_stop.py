@@ -577,6 +577,46 @@ class TestDispatchDedup:
         assert "dispatch_lock_timeout" in log
         assert "dispatch_say" in log
 
+    def test_marker_refreshed_after_say(self, voicevox_mock, tmp_path):
+        """say 完了後に marker が現在時刻で refresh されること（serial 二重発火対策）"""
+        bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+
+        before_s = int(time.time())
+        r = self._run("refresh 確認テスト", voicevox_mock["url"], tmp_path, bin_dir)
+        assert r.returncode == 0, r.stderr
+
+        marker = tmp_path / "state" / "on_stop_last_dispatch"
+        assert marker.is_file(), "marker が作成されていない"
+        marker_s = int(marker.read_text().split(" ", 1)[0])
+        # refresh により marker は say 完了時刻（≈ 実行終了）を指すはず
+        assert marker_s >= before_s, f"marker が古い: marker={marker_s}, before={before_s}"
+
+    def test_serial_dedup_after_long_say(self, voicevox_mock, tmp_path):
+        """serial: say が 3s 超えた後でも完了直後の同一 key は dedup される（refresh 確認）
+
+        player を 3.2s 遅延させて say の所要時間を window(3s) より長くする。
+        refresh なし: dispatch 時刻を基準とすると elapsed > 3s → 2 回目が dispatch される（不具合）。
+        refresh あり: 完了時刻を基準とするため elapsed ≈ 0s → 2 回目は dedup される（修正後）。
+        """
+        bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+        # player を 3.2s 遅延させる（window=3s を超過）
+        player = bin_dir / "afplay"
+        player.write_text("#!/bin/bash\nsleep 3.2\nexit 0\n")
+        player.chmod(0o755)
+
+        text = "long say serial dedup テスト"
+        r1 = self._run(text, voicevox_mock["url"], tmp_path, bin_dir, timeout=30)
+        assert r1.returncode == 0, r1.stderr
+
+        # r1 完了直後（elapsed < 3s）に再実行 → refresh により dedup されること
+        r2 = self._run(text, voicevox_mock["url"], tmp_path, bin_dir, timeout=30)
+        assert r2.returncode == 0, r2.stderr
+
+        log = self._log(tmp_path)
+        assert "dispatch_dedup" in log, f"dedup されなかった:\n{log}"
+        assert log.count("dispatch_say") == 1, f"dispatch_say が 1 件でない:\n{log}"
+
     def test_race_two_parallel_dispatches_one(self, voicevox_mock, tmp_path):
         """2 並列起動 → dispatch_say 1 件・dispatch_dedup 1 件"""
         bin_dir = tmp_path / "bin"; bin_dir.mkdir()

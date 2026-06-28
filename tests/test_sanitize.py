@@ -1293,3 +1293,72 @@ class TestMaxChars:
         assert r.returncode == 0
         assert r.stdout.strip() == str(constants.MAX_CHARS_LIMIT)
         assert "無効な値" in r.stderr
+
+
+# ---------------------------------------------------------------------------
+# 機密情報マスク (B-127)
+# ---------------------------------------------------------------------------
+
+
+class TestMaskSecrets:
+    """mask_secrets() の正例・負例テスト。PIPELINE への統合確認も含む。"""
+
+    def test_openai_api_key_masked(self):
+        result = sanitize.mask_secrets("sk-abc12345678901234567890 を使ってください")
+        assert "[機密情報省略]" in result
+        assert "sk-abc" not in result
+
+    def test_openai_proj_key_masked_by_sk_pattern(self):
+        """sk-proj- は sk- パターンで一致する（sk-proj- 専用パターンは不要）"""
+        result = sanitize.mask_secrets("sk-proj-abc12345678901234567890")
+        assert "[機密情報省略]" in result
+
+    def test_github_pat_classic_masked(self):
+        ghp = "ghp_" + "A" * 36
+        result = sanitize.mask_secrets(f"トークン: {ghp}")
+        assert "[機密情報省略]" in result
+        assert "ghp_" not in result
+
+    def test_github_oauth_token_masked(self):
+        gho = "gho_" + "B" * 36
+        result = sanitize.mask_secrets(gho)
+        assert "[機密情報省略]" in result
+
+    def test_github_fine_grained_pat_masked(self):
+        pat = "github_pat_" + "C" * 82
+        result = sanitize.mask_secrets(pat)
+        assert "[機密情報省略]" in result
+
+    def test_password_equal_masked(self):
+        result = sanitize.mask_secrets("password=hunter2 でログイン")
+        assert "[機密情報省略]" in result
+        assert "hunter2" not in result
+
+    def test_api_key_colon_masked(self):
+        result = sanitize.mask_secrets("api_key: abc123xyz")
+        assert "[機密情報省略]" in result
+
+    def test_authorization_bearer_masked(self):
+        result = sanitize.mask_secrets("authorization: Bearer abc123xyz")
+        assert "[機密情報省略]" in result
+        assert "abc123xyz" not in result
+
+    def test_token_upper_case_masked(self):
+        """(?i:token) により大文字 TOKEN も対象"""
+        result = sanitize.mask_secrets("TOKEN=secret123")
+        assert "[機密情報省略]" in result
+
+    def test_normal_text_unchanged(self):
+        """機密パターンを含まない通常テキストは変化しない"""
+        text = "これは普通の文章です。特に秘密はありません。"
+        assert sanitize.mask_secrets(text) == text
+
+    def test_code_block_secrets_not_reach_mask_secrets(self):
+        """コードブロック内の secret は remove_code_blocks で先に除去されるため
+        mask_secrets には到達しない（パイプライン順序の確認）"""
+        text = "```\nsk-abc12345678901234567890\n```"
+        result = sanitize.sanitize(text)
+        # remove_code_blocks で「コードブロック省略。」に変換済みなので
+        # sk- パターンは残っていない
+        assert "sk-" not in result
+        assert "[機密情報省略]" not in result  # mask_secrets は不要なため動かない
