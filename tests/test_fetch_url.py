@@ -1,5 +1,6 @@
 """tests/test_fetch_url.py - fetch_url.py のユニットテスト (B-003)"""
 
+import socket
 import urllib.error
 import urllib.request
 from io import BytesIO
@@ -302,7 +303,7 @@ class TestUrlValidation:
         """redirect後のURLがhttps以外ならエラー"""
         resp = _MockResponse(b"<p>text</p>", url="javascript:alert(1)")
         with patch("urllib.request.urlopen", return_value=resp):
-            with pytest.raises(RuntimeError, match="redirect to unsupported scheme"):
+            with pytest.raises(RuntimeError, match="unsupported URL scheme"):
                 furl.fetch_url("https://example.com")
 
 
@@ -435,6 +436,87 @@ class TestRubyHandling:
         with patch("urllib.request.urlopen", return_value=_MockResponse(html)):
             text = furl.fetch_url("https://example.com")
         assert "Hello World" in text
+
+
+# ---------------------------------------------------------------------------
+# SSRF チェック（strict_ssrf=True）
+# ---------------------------------------------------------------------------
+
+
+def _make_getaddrinfo_mock(ip: str):
+    """指定 IP を返す socket.getaddrinfo モックを作る。"""
+    return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", (ip, 0))]
+
+
+class TestSsrfCheck:
+    """strict_ssrf=True 時の SSRF ブロック確認。socket.getaddrinfo をモックして使用。"""
+
+    def _ssrf_raises(self, url: str, ip: str) -> None:
+        with patch("fetch_url.socket.getaddrinfo", return_value=_make_getaddrinfo_mock(ip)):
+            with pytest.raises(RuntimeError, match="SSRF blocked"):
+                furl.fetch_url(url, strict_ssrf=True)
+
+    def test_loopback_ipv4_blocked(self):
+        self._ssrf_raises("http://localhost/", "127.0.0.1")
+
+    def test_loopback_explicit_ip_blocked(self):
+        self._ssrf_raises("http://127.0.0.1/", "127.0.0.1")
+
+    def test_private_class_c_blocked(self):
+        self._ssrf_raises("http://192.168.1.1/", "192.168.1.1")
+
+    def test_link_local_metadata_blocked(self):
+        self._ssrf_raises("http://169.254.169.254/", "169.254.169.254")
+
+    def test_loopback_ipv6_blocked(self):
+        with patch(
+            "fetch_url.socket.getaddrinfo",
+            return_value=[(socket.AF_INET6, socket.SOCK_STREAM, 0, "", ("::1", 0, 0, 0))],
+        ):
+            with pytest.raises(RuntimeError, match="SSRF blocked"):
+                furl.fetch_url("http://[::1]/", strict_ssrf=True)
+
+    def test_dns_resolution_failure_blocked(self):
+        """解決不能なホストは拒否する。"""
+        with patch(
+            "fetch_url.socket.getaddrinfo",
+            side_effect=socket.gaierror("Name or service not known"),
+        ):
+            with pytest.raises(RuntimeError, match="hostname resolution failed"):
+                furl.fetch_url("http://no-such-host.invalid/", strict_ssrf=True)
+
+    def test_redirect_to_private_ip_blocked(self):
+        """strict_ssrf=True では redirect 先の内部 IP もブロックされること。"""
+        # _fetch_strict_ssrf が使われ、_RedirectException 後に _check_ssrf が走る
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            # 初回（初期 URL の external.com）はグローバル IP を返す
+            if host == "external.com":
+                return _make_getaddrinfo_mock("203.0.113.1")
+            # redirect 先の internal.example は内部 IP を返す
+            return _make_getaddrinfo_mock("10.0.0.1")
+
+        class FakeOpener:
+            call_count = 0
+
+            def open(self, req, timeout=None):
+                self.call_count += 1
+                if self.call_count == 1:
+                    raise furl._RedirectException("http://internal.example/", 302)
+                return _MockResponse(b"<p>secret</p>", url="http://internal.example/")
+
+        with patch("fetch_url.socket.getaddrinfo", side_effect=fake_getaddrinfo):
+            with patch("fetch_url.urllib.request.build_opener", return_value=FakeOpener()):
+                with pytest.raises(RuntimeError, match="SSRF blocked"):
+                    furl.fetch_url("http://external.com/", strict_ssrf=True)
+
+    def test_strict_ssrf_false_does_not_call_getaddrinfo(self):
+        """デフォルト(strict_ssrf=False)では getaddrinfo が呼ばれないこと。"""
+        html = b"<p>OK</p>"
+        with patch("fetch_url.socket.getaddrinfo") as mock_gai:
+            with patch("urllib.request.urlopen", return_value=_MockResponse(html)):
+                text = furl.fetch_url("http://localhost:3000/page")
+        assert "OK" in text
+        mock_gai.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

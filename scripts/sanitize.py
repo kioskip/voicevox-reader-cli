@@ -639,6 +639,27 @@ def truncate(text: str, max_chars: int = MAX_CHARS) -> str:
     return text
 
 
+# ---------- 機密情報マスク (B-127) ----------
+
+_SECRET_RE = re.compile(
+    r"""
+    (?:
+        sk-[A-Za-z0-9_\-]{20,}              # OpenAI / Anthropic API key (sk-proj- も包含)
+      | ghp_[A-Za-z0-9]{36}                 # GitHub PAT classic
+      | gho_[A-Za-z0-9]{36}                 # GitHub OAuth token
+      | github_pat_[A-Za-z0-9_]{82}         # GitHub PAT fine-grained
+      | (?i:password|passwd|token|api[_\-]?key|secret|authorization)\s*[:=]\s*\S+(?:\s+\S+)?
+    )
+    """,
+    re.VERBOSE,
+)
+
+
+def mask_secrets(text: str) -> str:
+    """APIキー・パスワード等の機密情報をマスクする。"""
+    return _SECRET_RE.sub("[機密情報省略]", text)
+
+
 # ---------- パイプライン ----------
 
 # 順序が意味を持つ:
@@ -647,6 +668,7 @@ def truncate(text: str, max_chars: int = MAX_CHARS) -> str:
 #   URL は read_inline_code 側のロジックで扱える(逐字カナ化を回避)
 PIPELINE: List[Callable[[str], str]] = [
     remove_code_blocks,
+    mask_secrets,  # コードブロック除去後に機密情報をマスク（B-127）
     # B-011 Phase 4: 「第 + 空白 + 数字」の前空白を先に詰めることで、後段の
     # transform_year / transform_month_day / transform_counter_space がそれぞれ
     # 「第N年」「第N月」「第N四半期」を漢数字・空白除去できるようにする。
