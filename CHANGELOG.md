@@ -11,9 +11,22 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ## [Unreleased]
 
+---
+
+## [0.4.3] - 2026-06-30
+
 ### Added
+- **`vvread say --speed N`** (B-129): VOICEVOX の speedScale を CLI から指定できるようになった (`--speed 0.5–2.0`、浮動小数バリデーション・canonicalize 付き)。`--queue --speed` 同時使用時は queue entry にメタデータ (`#vvread speed=N`) として記録し、drain 時に各エントリの速度を独立して再生する。
+
 ### Changed
+- **`vvread doctor` settings 行 origin 表示を短縮形に変更** (U-121): `[env: VOICEVOX_SPEAKER]` 等のパス/変数名はフル表示から `[env]` / `[project]` / `[user]` の短縮形に変更。`[derived: key]` は診断価値のため detail を維持。
+
 ### Fixed
+- **queue entry の先頭行が速度メタデータと衝突しない** (B-129): `--speed` なしで積んだテキストの先頭行が `#vvread speed=N` という形式だった場合に1行目が削除される恐れがあった問題を修正。`_queue_enqueue` が speed 指定なし時も `#vvread` ヘッダー行を書くことで line 1 を常に vvread が制御し、body の任意テキストを安全に保護する。
+- **`--queue --speed` が drainer のベースライン速度を汚染しない** (B-129): `--speed N` 付きで起動した say が drainer になるとき、速度指定のない先行エントリが `N` で合成されてしまう問題を修正。`VOICEVOX_SPEED` の export を queue モードでは実行せず preempt パスに限定し、no-speed エントリのベースライン速度（`VOICEVOX_SPEED` 環境変数 / 既定 1.5）を保護する。
+
+### Breaking
+- **`vvread doctor --json` の `settings/sources` アイテムが削除された** (U-121): 設定ファイルのパスは `paths/settings_file` 行に移動。`--json` 出力をパースするスクリプトがある場合は更新が必要。
 
 ---
 

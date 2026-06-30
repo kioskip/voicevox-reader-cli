@@ -161,6 +161,31 @@ class TestArgsValidation:
         assert r.returncode == 1
         assert "Usage: vvread say" in r.stderr
 
+    def test_speed_without_arg(self, tmp_path):
+        r = run_say("hello", "--speed", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "--speed requires" in r.stderr
+
+    def test_speed_out_of_range(self, tmp_path):
+        r = run_say("hello", "--speed", "9.9", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "0.5" in r.stderr and "2.0" in r.stderr
+
+    def test_speed_non_numeric(self, tmp_path):
+        r = run_say("hello", "--speed", "fast", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "0.5" in r.stderr and "2.0" in r.stderr
+
+    def test_speed_empty_value(self, tmp_path):
+        r = run_say("hello", "--speed=", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "0.5" in r.stderr and "2.0" in r.stderr
+
+    def test_speed_dot_prefix_rejected(self, tmp_path):
+        r = run_say("hello", "--speed", ".8", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "0.5" in r.stderr and "2.0" in r.stderr
+
 
 # ---------------------------------------------------------------------------
 # 単一 chunk の正常経路
@@ -216,6 +241,71 @@ class TestSingleChunk:
         # 形式: <ms>_<pid>
         content = session_file.read_text().strip()
         assert "_" in content
+
+    def test_speed_boundary_valid(self, voicevox_mock, tmp_path):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        for speed in ("0.5", "2.0"):
+            r = run_say("hello", "--speed", speed, env_extra=env)
+            assert r.returncode == 0, f"speed={speed} stderr={r.stderr}"
+            assert "--speed must be" not in r.stderr
+
+    def test_speed_via_flag(self, voicevox_mock, tmp_path):
+        import json
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_say("hello", "--speed", "1.2", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        # synthesis リクエスト body に speedScale == 1.2
+        synth_bodies = [
+            json.loads(req["body"])
+            for req in voicevox_mock["state"].requests
+            if "/synthesis" in req["path"] and req.get("body")
+        ]
+        assert synth_bodies, "synthesis リクエストがない"
+        for body in synth_bodies:
+            assert abs(body.get("speedScale", 0) - 1.2) < 1e-6, \
+                f"speedScale expected 1.2 got {body.get('speedScale')}"
+
+    def test_speed_canonicalize_leading_zero(self, voicevox_mock, tmp_path):
+        import json
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_say("hello", "--speed", "01.0", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        synth_bodies = [
+            json.loads(req["body"])
+            for req in voicevox_mock["state"].requests
+            if "/synthesis" in req["path"] and req.get("body")
+        ]
+        assert synth_bodies, "synthesis リクエストがない"
+        for body in synth_bodies:
+            assert abs(body.get("speedScale", 0) - 1.0) < 1e-6, \
+                f"speedScale expected 1.0 got {body.get('speedScale')}"
+
+    def test_speed_canonicalize_trailing_zero(self, voicevox_mock, tmp_path):
+        import json
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        r = run_say("hello", "--speed", "1.80", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        synth_bodies = [
+            json.loads(req["body"])
+            for req in voicevox_mock["state"].requests
+            if "/synthesis" in req["path"] and req.get("body")
+        ]
+        assert synth_bodies, "synthesis リクエストがない"
+        for body in synth_bodies:
+            assert abs(body.get("speedScale", 0) - 1.8) < 1e-6, \
+                f"speedScale expected 1.8 got {body.get('speedScale')}"
 
 
 # ---------------------------------------------------------------------------

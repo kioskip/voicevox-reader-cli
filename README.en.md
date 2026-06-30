@@ -134,12 +134,13 @@ Detailed command references are currently available in Japanese:
 ### Common commands
 
 ```bash
-vvread "text"                  # speak text
-vvread file README.md          # read a file aloud
-vvread url https://example.com # fetch a webpage and read it aloud
-cat build.log | vvread         # pipe input
-vvread stop                    # stop playback
-vvread doctor                  # health check
+vvread "text"                           # speak text
+vvread "faster" --speed 1.8            # adjust speed (0.5–2.0)
+vvread file README.md                   # read a file aloud
+vvread url https://example.com          # fetch a webpage and read it aloud
+cat build.log | vvread                  # pipe input
+vvread stop                             # stop playback
+vvread doctor                           # health check
 ```
 
 ---

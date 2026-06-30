@@ -520,6 +520,179 @@ class TestDrainLog:
         )
 
 
+# ---------------------------------------------------------------------------
+# speed metadata (B-129)
+# ---------------------------------------------------------------------------
+
+class TestDrainSpeed:
+    """queue drain の speed metadata 解析・cross-entry leak 防止テスト。"""
+
+    def _synth_speed_scales(self, state) -> list:
+        """記録された synthesis リクエスト body から speedScale を順番に抽出。"""
+        import json
+        out = []
+        for req in state.requests:
+            if "/synthesis" not in req["path"]:
+                continue
+            raw = req.get("body", b"")
+            if isinstance(raw, (bytes, bytearray)) and raw:
+                body = json.loads(raw)
+                out.append(body.get("speedScale"))
+        return out
+
+    def _place_pending(self, env: dict, text: str, seq: int) -> None:
+        """pending/ に手動でエントリを配置。
+
+        seq は 1, 2, ... で連番を使う。ゼロパディングして現在の
+        ミリ秒タイムスタンプ（~1751000000000, 13 桁）より確実に
+        レキシコグラフィック的に小さくするため "000000000000{seq}" を使う。
+        _queue_sorted は LC_ALL=C sort（辞書順）なので "0..." < "1..." が成立する。
+        """
+        qdir = _queue_dir(env)
+        pending = qdir / "pending"
+        pending.mkdir(parents=True, exist_ok=True)
+        ms_str = f"000000000000{seq}"
+        entry_name = f"{ms_str}_99999.{seq:05d}.3.cli.r0"
+        (pending / entry_name).write_text(text)
+
+    def test_speed_via_queue_flag(self, voicevox_mock, tmp_path):
+        """--queue --speed 1.8 で synthesis に speedScale 1.8 が届く。"""
+        import json
+        bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+
+        r = run_say("あ", "--queue", "--speed", "1.8", env_extra=env)
+        assert r.returncode == 0, r.stderr
+        scales = self._synth_speed_scales(voicevox_mock["state"])
+        assert scales, "synthesis リクエストがない"
+        for s in scales:
+            assert abs(s - 1.8) < 1e-6, f"speedScale expected 1.8 got {s}"
+
+    def test_drain_invalid_speed_uses_baseline(self, voicevox_mock, tmp_path):
+        """#vvread speed=invalid ヘッダーは line 1 を strip してベースライン speed で合成。
+
+        新設計では writer が line 1 を常に制御するため invalid speed でも line 1 を
+        strip し body(line 2 以降)を正常に合成する。
+        """
+        bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        _enable_queue(env)
+        env["VOICEVOX_SPEED"] = "1.5"
+
+        # 無効 speed を持つエントリを早い ms で pending に配置（line 1 = header, line 2 = body）
+        header_body = "#vvread speed=hello\n本文です"
+        self._place_pending(env, header_body, seq=1)
+
+        # say でドレイナー起動
+        r = run_say("あいうえお", env_extra=env)
+        assert r.returncode == 0, r.stderr
+
+        # body ("本文です") が synthesis に届いており、speed は baseline (1.5)
+        query_texts = _audio_query_texts(voicevox_mock["state"])
+        assert any("本文です" in t for t in query_texts), \
+            f"body text not synthesized: {query_texts}"
+        scales = self._synth_speed_scales(voicevox_mock["state"])
+        assert scales, "synthesis リクエストがない"
+        assert abs(scales[0] - 1.5) < 1e-6, \
+            f"invalid speed should fall back to baseline 1.5, got {scales[0]}"
+
+    def test_body_starting_with_speed_marker_protected(self, voicevox_mock, tmp_path):
+        """--speed なしで送った '#vvread speed=N' で始まるテキストが削除されない。
+
+        以前の設計（no-speed = headerless）では '#vvread speed=1.0' で始まる
+        テキストが metadata として誤解析されて1行目が消える恐れがあった（Codex P2）。
+        新設計では no-speed エントリに '#vvread' ヘッダーを書くため、body の
+        '#vvread speed=...' 行は line 2 に来て安全に合成される。
+        """
+        bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        env["VOICEVOX_SPEED"] = "1.5"
+
+        # --speed なしで body が '#vvread speed=1.0' から始まるテキストを送信
+        # _queue_enqueue は '#vvread\n#vvread speed=1.0\n...' と書く
+        r = run_say("#vvread speed=1.0 が本文の先頭", "--queue", env_extra=env)
+        assert r.returncode == 0, r.stderr
+
+        query_texts = _audio_query_texts(voicevox_mock["state"])
+        # sanitize.py が '#' を除去するため '#' なしで body text が届いていること確認
+        # (body が空でないことが重要; 行削除されていないことを検証)
+        assert any("vvread speed=1.0" in t for t in query_texts), \
+            f"body text lost — query_texts: {query_texts}"
+        # speed は --speed なしなので baseline (1.5)
+        scales = self._synth_speed_scales(voicevox_mock["state"])
+        assert scales, "synthesis リクエストがない"
+        assert abs(scales[0] - 1.5) < 1e-6, \
+            f"speed should stay at baseline 1.5 (no --speed flag), got {scales[0]}"
+
+    def test_speed_invocation_as_drainer_preserves_nospeed_entry_baseline(
+        self, voicevox_mock, tmp_path
+    ):
+        """--speed 1.8 の say が drainer になっても先行する no-speed エントリはベースライン (1.5) で合成。
+
+        Codex P2 #2 回帰テスト。
+        修正前: say.sh が QUEUE_MODE 解決より前に export VOICEVOX_SPEED=1.8 するため
+        _vvread_drain_one_entry の baseline が 1.8 に汚染される。
+        修正後: queue モードでは export を実行しないため baseline は 1.5 のまま。
+        """
+        bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        _enable_queue(env)
+        env["VOICEVOX_SPEED"] = "1.5"
+
+        # no-speed エントリを事前配置（seq=1 → 最初に処理される）
+        self._place_pending(env, "#vvread\nあいうえお", seq=1)
+
+        # --speed 1.8 で drainer として起動
+        r = run_say("かきくけこ", "--speed", "1.8", env_extra=env)
+        assert r.returncode == 0, r.stderr
+
+        scales = self._synth_speed_scales(voicevox_mock["state"])
+        assert len(scales) >= 2, f"synthesis が 2 件以上必要: {scales}"
+        # seq=1 (no-speed): baseline 1.5 (drainer の --speed で汚染されていない)
+        assert abs(scales[0] - 1.5) < 1e-6, (
+            f"no-speed entry should use baseline 1.5, got {scales[0]} "
+            f"(bug: drainer --speed polluted baseline)"
+        )
+        # drainer 自身のエントリ (speed=1.8 via metadata): 1.8
+        assert abs(scales[1] - 1.8) < 1e-6, \
+            f"drainer entry should use speed 1.8, got {scales[1]}"
+
+    def test_drain_speed_not_leaked_to_next_entry(self, voicevox_mock, tmp_path):
+        """entry A (speed=2.0) の後 entry B (new '#vvread' header) は baseline speed (1.5) で合成。
+
+        両エントリを same drainer で処理するため、早い ms の pending エントリを
+        手動配置してから say で drainer を起動する。
+        """
+        bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        _enable_queue(env)
+        # ユーザー設定による干渉を排除してベースラインを 1.5 に固定する
+        env["VOICEVOX_SPEED"] = "1.5"
+
+        # entry A: speed=2.0 header (seq=1 → 最初に処理)
+        self._place_pending(env, "#vvread speed=2.0\nあいうえお", seq=1)
+        # entry B: no-speed new format (seq=2 → 次に処理); '#vvread' bare header
+        self._place_pending(env, "#vvread\nかきくけこ", seq=2)
+
+        # say で drainer を起動（entry C として ms=current で追加）
+        # drainer は A→B→C の順に drain する（ゼロパディング ms が先に来る）
+        r = run_say("さしすせそ", env_extra=env)
+        assert r.returncode == 0, r.stderr
+
+        scales = self._synth_speed_scales(voicevox_mock["state"])
+        assert len(scales) >= 2, f"synthesis が 2 件以上必要: {scales}"
+        # entry A: speedScale == 2.0
+        assert abs(scales[0] - 2.0) < 1e-6, f"entry A speedScale expected 2.0 got {scales[0]}"
+        # entry B: speedScale == 1.5 (baseline; cross-entry leak なら 2.0 になる)
+        assert abs(scales[1] - 1.5) < 1e-6, \
+            f"entry B speedScale expected 1.5 (no leak from A), got {scales[1]}"
+
+
 def _clean_env_for(env: dict) -> dict:
     """run_say と同じ _clean_env 相当を Popen 用に組み立てる。"""
     import os

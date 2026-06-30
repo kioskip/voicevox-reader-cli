@@ -132,12 +132,13 @@ vvread doctor         # ヘルスチェック
 ### よく使うコマンド
 
 ```bash
-vvread "テキスト"              # 読み上げ
-vvread file README.md          # ファイルを読み上げ
-vvread url https://example.com # URLのWebページ本文を読み上げ
-cat build.log | vvread         # パイプ入力
-vvread stop                    # 再生停止
-vvread doctor                  # ヘルスチェック
+vvread "テキスト"                       # 読み上げ
+vvread "はやく読んで" --speed 1.8       # 速度指定（0.5–2.0）
+vvread file README.md                   # ファイルを読み上げ
+vvread url https://example.com          # URLのWebページ本文を読み上げ
+cat build.log | vvread                  # パイプ入力
+vvread stop                             # 再生停止
+vvread doctor                           # ヘルスチェック
 ```
 
 ---

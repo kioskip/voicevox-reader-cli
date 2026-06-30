@@ -238,9 +238,10 @@ class TestSettingsIntegration:
         env["VOICEVOX_SPEAKER"] = "8"
         r = run_doctor("--offline", env_extra=env, cwd=tmp_path)
         assert r.returncode == 0
-        # voicevox.speaker の行に env と 8 が現れる
+        # voicevox.speaker の行に env が現れる（U-121: 変数名は短縮形で非表示）
         assert "voicevox.speaker" in r.stdout
-        assert "VOICEVOX_SPEAKER" in r.stdout
+        assert "[env]" in r.stdout
+        assert "VOICEVOX_SPEAKER" not in r.stdout
 
     def test_unknown_setting_warned(self, tmp_path):
         env = _path_env(tmp_path)

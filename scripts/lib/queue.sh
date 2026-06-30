@@ -468,9 +468,9 @@ vvread_queue_entry_field() {
 # 既存衝突時は nonce 再生成で再試行（既存内容を上書きしない）。
 # ms は lock 取得前に呼び元で捕捉したタイムスタンプ（FIFO 順序保証・F-118）。
 _queue_enqueue() {
-  local source="${1:-}" speaker="${2:-}" text="${3:-}" retry="${4:-0}" ms="${5:-}"
+  local source="${1:-}" speaker="${2:-}" text="${3:-}" retry="${4:-0}" ms="${5:-}" speed="${6:-}"
   [ -n "${ms}" ] || ms=$(_now_ms)
-  local nonce entry tmp tries=0
+  local nonce entry tmp tries=0 body
   while [ "${tries}" -lt 20 ]; do
     nonce="${RANDOM}${RANDOM}"
     entry="${ms}_$$.${nonce}.${speaker}.${source}.r${retry}"
@@ -479,9 +479,18 @@ _queue_enqueue() {
     fi
     tries=$((tries + 1))
   done
+  if [ -n "${speed}" ]; then
+    body="#vvread speed=${speed}
+${text}"
+  else
+    # Always write a header so line 1 is vvread-controlled (prevents body text
+    # that starts with "#vvread speed=N" from being misread as metadata).
+    body="#vvread
+${text}"
+  fi
   ( umask 077
     tmp="${QDIR}/pending/${entry}.tmp.$$"
-    printf '%s' "${text}" > "${tmp}" \
+    printf '%s' "${body}" > "${tmp}" \
       && mv "${tmp}" "${QDIR}/pending/${entry}" )
   return 0
 }
@@ -524,7 +533,7 @@ _queue_drop_oldest_auto() {
 #   cli（手動）: full なら新規 reject + WARN（既存 cli は消さない）
 #   hook/mcp（自動）: 最古の自動通知を drop して空ければ enqueue、無理なら reject
 _queue_submit_with_overflow() {
-  local source="${1:-}" speaker="${2:-}" text="${3:-}" ms="${4:-}"
+  local source="${1:-}" speaker="${2:-}" text="${3:-}" ms="${4:-}" speed="${5:-}"
   local count
   count=$(_queue_count "${QDIR}/pending")
   if [ "${count}" -ge "${_QUEUE_MAX}" ]; then
@@ -541,7 +550,7 @@ _queue_submit_with_overflow() {
         ;;
     esac
   fi
-  _queue_enqueue "${source}" "${speaker}" "${text}" 0 "${ms}"
+  _queue_enqueue "${source}" "${speaker}" "${text}" 0 "${ms}" "${speed}"
 }
 
 # 全 enqueue 共通入口。source 別分岐を mutation lock 内で実行する。
@@ -550,7 +559,7 @@ _queue_submit_with_overflow() {
 #   cli : そのまま enqueue
 # タイムスタンプは lock 取得前に捕捉し FIFO 順序を保証する（F-118）。
 vvread_queue_submit() {
-  local source="${1:-}" speaker="${2:-}" text="${3:-}"
+  local source="${1:-}" speaker="${2:-}" text="${3:-}" speed="${4:-}"
   case "${source}" in
     cli|hook|mcp) ;;
     *) log_warn "queue: submit invalid source=${source}"; return 2 ;;
@@ -567,19 +576,19 @@ vvread_queue_submit() {
     return 1
   fi
   local rc=0
-  _queue_submit_locked "${source}" "${speaker}" "${text}" "${submit_ms}" || rc=$?
+  _queue_submit_locked "${source}" "${speaker}" "${text}" "${submit_ms}" "${speed}" || rc=$?
   _queue_mutate_unlock "${tok}"
   return "${rc}"
 }
 
 # submit の本体（mutation lock 保持前提）
 _queue_submit_locked() {
-  local source="${1:-}" speaker="${2:-}" text="${3:-}" ms="${4:-}"
+  local source="${1:-}" speaker="${2:-}" text="${3:-}" ms="${4:-}" speed="${5:-}"
   case "${source}" in
     hook)
       _queue_marker_write "${QDIR}/queue_last_hook_ms" "$(_now_ms)"
       _queue_evict_pending_auto
-      _queue_submit_with_overflow "${source}" "${speaker}" "${text}" "${ms}"
+      _queue_submit_with_overflow "${source}" "${speaker}" "${text}" "${ms}" "${speed}"
       ;;
     mcp)
       local created="${VVREAD_SAY_CREATED_MS:-}" marker
@@ -592,10 +601,10 @@ _queue_submit_locked() {
         log_info "queue: mcp summary superseded by hook (marker=${marker} created=${created}) — drop"
         return 0
       fi
-      _queue_submit_with_overflow "${source}" "${speaker}" "${text}" "${ms}"
+      _queue_submit_with_overflow "${source}" "${speaker}" "${text}" "${ms}" "${speed}"
       ;;
     cli)
-      _queue_submit_with_overflow "${source}" "${speaker}" "${text}" "${ms}"
+      _queue_submit_with_overflow "${source}" "${speaker}" "${text}" "${ms}" "${speed}"
       ;;
   esac
 }

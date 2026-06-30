@@ -129,10 +129,34 @@ _vvread_resolve_queue_mode() {
 #         3=skip / 4=lost-lock（queue.lock を回収された。再生せず playing に残し退場）
 _vvread_drain_one_entry() {
   local entry="$1"
-  local espk etext chunked total idx wav srraw prc
+  # Reset per entry to the drainer baseline speed (local prevents cross-entry leak).
+  local VOICEVOX_SPEED="${VOICEVOX_SPEED:-1.5}"
+  export VOICEVOX_SPEED
+  local espk _normalized="" etext _first_line _entry_speed="" chunked total idx wav srraw prc
   espk=$(vvread_queue_entry_field "${entry}" speaker)
   _queue_is_uint "${espk}" || espk="${SPEAKER}"
-  etext=$(cat "${QDIR}/playing/${entry}" 2>/dev/null || echo "")
+  _first_line=$(head -n 1 "${QDIR}/playing/${entry}" 2>/dev/null || true)
+  case "${_first_line}" in
+    '#vvread speed='*)
+      # vvread-controlled header with speed. Strip line 1 in all cases so body
+      # content is never lost. Invalid value falls back to baseline speed.
+      _entry_speed="${_first_line#'#vvread speed='}"
+      if _normalized=$(_vvread_speed_normalize "${_entry_speed}"); then
+        VOICEVOX_SPEED="${_normalized}"
+      else
+        log_warn "queue: invalid speed in entry metadata (${_entry_speed}) — using baseline"
+      fi
+      etext=$(tail -n +2 "${QDIR}/playing/${entry}" 2>/dev/null || echo "")
+      ;;
+    '#vvread')
+      # vvread-controlled header without speed. Strip line 1; use baseline speed.
+      etext=$(tail -n +2 "${QDIR}/playing/${entry}" 2>/dev/null || echo "")
+      ;;
+    *)
+      # Legacy entries (pre-v0.4.3, no header): treat whole file as body.
+      etext=$(cat "${QDIR}/playing/${entry}" 2>/dev/null || echo "")
+      ;;
+  esac
   [ -n "${etext}" ] || return 0
 
   chunked=$(vvread_chunk_split "${etext}" "${espk}" "${PYTHON}" "${VVREAD_SCRIPTS_DIR}")
@@ -295,7 +319,7 @@ if [ "${QUEUE_MODE}" = "1" ]; then
   trap _vvread_queue_cleanup EXIT
 
   _submit_rc=0
-  vvread_queue_submit "${SAY_SOURCE}" "${SPEAKER}" "${TEXT}" || _submit_rc=$?
+  vvread_queue_submit "${SAY_SOURCE}" "${SPEAKER}" "${TEXT}" "${SPEED_OVERRIDE:-}" || _submit_rc=$?
   _text_preview="${TEXT:0:10}"
   _text_preview="${_text_preview//$'\n'/ }"
   _text_preview="${_text_preview//$'\r'/}"
@@ -317,6 +341,13 @@ if [ "${QUEUE_MODE}" = "1" ]; then
     fi
   fi
   exit 0
+fi
+
+# preempt モードのみ: --speed を env export で子プロセス(cache_key.py)に伝播。
+# queue モードでは speed は entry metadata (#vvread speed=N) で per-entry 管理するため
+# ここで export すると _vvread_drain_one_entry の baseline が汚染される（Codex P2 #2）。
+if [ -n "${SPEED_OVERRIDE:-}" ]; then
+  export VOICEVOX_SPEED="${SPEED_OVERRIDE}"
 fi
 
 # ===== sanitize + chunk split =====

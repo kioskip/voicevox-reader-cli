@@ -122,7 +122,7 @@ class TestSubmitPop:
             'echo "SRC=$(vvread_queue_entry_field "$base" source)"; '
             'echo "RET=$(vvread_queue_entry_field "$base" retry)"; '
             '[ -f "${QDIR}/playing/$base" ] && echo PLAYING_OK; '
-            'printf "BODY=%s\\n" "$(cat "${QDIR}/playing/$base")"',
+            'printf "BODY=%s\\n" "$(tail -n +2 "${QDIR}/playing/$base")"',
             tmp_path,
         )
         assert "SPK=7" in r.stdout, r.stdout
@@ -162,7 +162,8 @@ class TestSubmitPop:
               'vvread_queue_submit cli 3 "second"', tmp_path)
         files = sorted((_qdir(tmp_path) / "pending").glob("*"))
         assert len(files) == 2
-        bodies = {f.read_text() for f in files}
+        # line 1 は '#vvread' ヘッダー; body は line 2 以降
+        bodies = {f.read_text().splitlines()[-1] for f in files}
         assert bodies == {"first", "second"}
 
     def test_submit_fifo_pop_order(self, tmp_path):
@@ -174,9 +175,9 @@ class TestSubmitPop:
             'vvread_queue_submit cli 3 "second"; '
             'vvread_queue_submit cli 3 "third"; '
             'b1=$(vvread_queue_pop); b2=$(vvread_queue_pop); b3=$(vvread_queue_pop); '
-            'cat "${QDIR}/playing/${b1}"; echo; '
-            'cat "${QDIR}/playing/${b2}"; echo; '
-            'cat "${QDIR}/playing/${b3}"; echo',
+            'tail -n +2 "${QDIR}/playing/${b1}"; echo; '
+            'tail -n +2 "${QDIR}/playing/${b2}"; echo; '
+            'tail -n +2 "${QDIR}/playing/${b3}"; echo',
             tmp_path,
         )
         lines = [l for l in r.stdout.splitlines() if l]
@@ -720,8 +721,8 @@ class TestSpaceInStatePath:
         r = run_q_state(
             'vvread_queue_submit cli 3 "first" >/dev/null; sleep 0.01; '
             'vvread_queue_submit cli 3 "second" >/dev/null; '
-            'b1=$(vvread_queue_pop); echo "P1=$(cat "${STATE_DIR}/queue/playing/$b1")"; '
-            'b2=$(vvread_queue_pop); echo "P2=$(cat "${STATE_DIR}/queue/playing/$b2")"',
+            'b1=$(vvread_queue_pop); echo "P1=$(tail -n +2 "${STATE_DIR}/queue/playing/$b1")"; '
+            'b2=$(vvread_queue_pop); echo "P2=$(tail -n +2 "${STATE_DIR}/queue/playing/$b2")"',
             state, log,
         )
         assert "P1=first" in r.stdout, r.stdout + r.stderr
@@ -1097,6 +1098,82 @@ class TestFailedMax:
         )
         assert "done" in r.stdout
         assert _queue_count(tmp_path, "failed") == 3  # drop されない
+
+
+# ---------------------------------------------------------------------------
+# speed metadata (B-129)
+# ---------------------------------------------------------------------------
+
+
+class TestQueueSpeedMetadata:
+    def test_speed_written_to_pending_header(self, tmp_path):
+        """_queue_enqueue に speed を渡すと pending エントリ先頭に #vvread speed= が書かれる。"""
+        r = run_q(
+            '_queue_enqueue cli 3 "hello" 0 "1000" "1.8"; '
+            'entry=$(ls "${QDIR}/pending/" | head -n 1); '
+            'head -n 1 "${QDIR}/pending/${entry}"',
+            tmp_path,
+        )
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "#vvread speed=1.8"
+
+    def test_no_speed_writes_bare_header(self, tmp_path):
+        """speed 指定なし（空文字）でも '#vvread' ヘッダー行を書く（衝突防止）。"""
+        r = run_q(
+            '_queue_enqueue cli 3 "hello" 0 "1000" ""; '
+            'entry=$(ls "${QDIR}/pending/" | head -n 1); '
+            'head -n 1 "${QDIR}/pending/${entry}"',
+            tmp_path,
+        )
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "#vvread"
+
+    def test_no_speed_body_on_line2(self, tmp_path):
+        """speed なしエントリは '#vvread' ヘッダーの次行から本文が始まる。"""
+        r = run_q(
+            '_queue_enqueue cli 3 "hello" 0 "1000" ""; '
+            'entry=$(ls "${QDIR}/pending/" | head -n 1); '
+            'tail -n +2 "${QDIR}/pending/${entry}"',
+            tmp_path,
+        )
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "hello"
+
+    def test_body_preserved_with_speed(self, tmp_path):
+        """speed ヘッダー付きでも本文が tail -n +2 で取れる。"""
+        r = run_q(
+            '_queue_enqueue cli 3 "body text" 0 "1000" "1.5"; '
+            'entry=$(ls "${QDIR}/pending/" | head -n 1); '
+            'tail -n +2 "${QDIR}/pending/${entry}"',
+            tmp_path,
+        )
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "body text"
+
+    def test_submit_chain_propagates_speed(self, tmp_path):
+        """vvread_queue_submit の speed 引数がファイルヘッダーまで伝播する。"""
+        r = run_q(
+            'vvread_queue_submit cli 3 "chain test" "1.3"; '
+            'entry=$(ls "${QDIR}/pending/" | head -n 1); '
+            'head -n 1 "${QDIR}/pending/${entry}"',
+            tmp_path,
+        )
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "#vvread speed=1.3"
+
+    def test_order_ms_and_speed_both_recorded(self, tmp_path):
+        """エントリ名の ms 順序と speed ヘッダーの両方が記録される。"""
+        r = run_q(
+            'vvread_queue_submit cli 3 "entry A" "1.8"; '
+            'entry=$(ls "${QDIR}/pending/" | head -n 1); '
+            'echo "name:${entry}"; '
+            'head -n 1 "${QDIR}/pending/${entry}"',
+            tmp_path,
+        )
+        assert r.returncode == 0, r.stderr
+        lines = r.stdout.strip().splitlines()
+        assert any(l.startswith("name:") for l in lines)
+        assert any(l == "#vvread speed=1.8" for l in lines)
 
 
 # ---------------------------------------------------------------------------
