@@ -8,11 +8,11 @@
 
 | コマンド | 説明 |
 |---|---|
-| `vvread <text> [--speaker N]` | テキストを直接読み上げ |
-| `vvread file <path> [--speaker N]` | ファイルの内容を読み上げ |
-| `vvread url <url> [--speaker N]` | WebページのURLを渡して本文を読み上げ |
-| `cat file \| vvread [--speaker N]` | stdin を読み上げ（パイプ入力のみ対応） |
-| `vvread say <text> [--speaker N]` | テキストを合成して再生（互換形式） |
+| `vvread <text> [--speaker N] [--speed N]` | テキストを直接読み上げ |
+| `vvread file <path> [--speaker N] [--speed N]` | ファイルの内容を読み上げ |
+| `vvread url <url> [--speaker N] [--speed N]` | WebページのURLを渡して本文を読み上げ |
+| `cat file \| vvread [--speaker N] [--speed N]` | stdin を読み上げ（パイプ入力のみ対応） |
+| `vvread say <text> [--speaker N] [--speed N]` | テキストを合成して再生（互換形式） |
 | `vvread synth <text> --output FILE [--speaker N]` | 合成のみ。wav を FILE に書き出す（再生しない） |
 | `vvread play <wav>` | 既存 wav を再生 |
 | `vvread on-stop` | Claude Code の Stop hook 用エントリ（手動では呼ばない） |
@@ -21,11 +21,22 @@
 
 ```bash
 vvread "ビルドが完了しました"
+vvread "はじめまして" --speed 1.8     # 速く再生
 vvread file /tmp/summary.txt
 vvread url https://example.com
 cat build.log | vvread
 vvread synth "おはようございます" --output morning.wav --speaker 1
 vvread play morning.wav
+```
+
+### `--speed N` — 再生速度（0.5–2.0）
+
+`--speed N` を付けると、その発話だけ速度を変えて再生できます（デフォルト: `VOICEVOX_SPEED` 環境変数 / `voicevox.speed` 設定 / 1.5）。
+
+```bash
+vvread say "ゆっくり" --speed 0.8
+vvread say "はやく" --speed 1.8
+vvread say "急ぎ発話" --queue --speed 2.0   # キューモードでも1エントリごとに速度指定可
 ```
 
 ### 注意事項

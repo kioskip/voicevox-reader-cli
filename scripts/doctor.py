@@ -75,7 +75,7 @@ class CheckItem:
 # ---------------------------------------------------------------------------
 
 
-def check_paths() -> List[CheckItem]:
+def check_paths(s: Optional[_settings.Settings] = None) -> List[CheckItem]:
     items: List[CheckItem] = []
     for name, fn in (
         ("state", _paths.state_dir),
@@ -99,6 +99,13 @@ def check_paths() -> List[CheckItem]:
             section="paths", label=name,
             status=status, detail=detail,
         ))
+    # 設定ファイルパス (U-121: origin detail を [paths] セクションに統合)
+    if s is not None and s.sources:
+        for path_str in s.sources:
+            items.append(CheckItem(
+                section="paths", label="settings_file",
+                status=STATUS_OK, detail=path_str,
+            ))
     return items
 
 
@@ -116,22 +123,13 @@ def check_settings(s: Optional[_settings.Settings] = None) -> List[CheckItem]:
     for key in sorted(s.values.keys()):
         rv = s.values[key]
         origin_str = rv.origin.source
-        if rv.origin.detail:
+        if rv.origin.source == "derived" and rv.origin.detail:
             origin_str = f"{rv.origin.source}: {rv.origin.detail}"
         items.append(CheckItem(
             section="settings",
             label=key,
             status=STATUS_INFO,
             detail=f"{rv.value!r}  [{origin_str}]",
-        ))
-
-    # ロード元
-    if s.sources:
-        items.append(CheckItem(
-            section="settings",
-            label="sources",
-            status=STATUS_OK,
-            detail=", ".join(s.sources),
         ))
 
     # parse_errors / unknown_keys は warning
@@ -951,9 +949,8 @@ def collect(*, offline: bool = False, scope: str = "runtime",
         cwd = Path.cwd()
 
     items: List[CheckItem] = []
-    items.extend(check_paths())
-
     s = _settings.load()
+    items.extend(check_paths(s))
     items.extend(check_settings(s))
     # voiceClaude プロジェクトルート(SCRIPT_DIR の親)を渡して、
     # install_hint の相対パスを絶対パスに変換 (R-009 別プロジェクト実行対応)

@@ -137,7 +137,85 @@ class TestCheckSettings:
         i = _by_label(items, "voicevox.speaker")
         assert i is not None
         assert "env" in i.detail
-        assert "VOICEVOX_SPEAKER" in i.detail
+        assert "VOICEVOX_SPEAKER" not in i.detail  # U-121: short form, no var name
+
+    def test_project_origin_is_short_form(self, tmp_path):
+        proj = tmp_path / "vvread.settings.json"
+        proj.write_text(json.dumps({"voicevox": {"speaker": 5}}))
+        s = settings_mod.load(
+            cwd=tmp_path, env={},
+            user_path=tmp_path / "u.json",
+            project_path=proj,
+        )
+        items = doctor_mod.check_settings(s)
+        i = _by_label(items, "voicevox.speaker")
+        assert i is not None
+        assert "project" in i.detail
+        assert str(proj) not in i.detail
+
+    def test_user_origin_is_short_form(self, tmp_path):
+        user_path = tmp_path / "u.json"
+        user_path.write_text(json.dumps({"voicevox": {"speaker": 7}}))
+        s = settings_mod.load(
+            cwd=tmp_path, env={},
+            user_path=user_path,
+            project_path=tmp_path / "p.json",
+        )
+        items = doctor_mod.check_settings(s)
+        i = _by_label(items, "voicevox.speaker")
+        assert i is not None
+        assert "user" in i.detail
+        assert str(user_path) not in i.detail
+
+    def test_env_origin_hides_varname(self, tmp_path):
+        s = settings_mod.load(
+            cwd=tmp_path,
+            env={"VOICEVOX_SPEAKER": "3"},
+            user_path=tmp_path / "u.json",
+            project_path=tmp_path / "p.json",
+        )
+        items = doctor_mod.check_settings(s)
+        i = _by_label(items, "voicevox.speaker")
+        assert i is not None
+        assert "env" in i.detail
+        assert "VOICEVOX_SPEAKER" not in i.detail
+
+    def test_derived_origin_keeps_detail(self, tmp_path):
+        s = settings_mod.load(
+            cwd=tmp_path, env={},
+            user_path=tmp_path / "u.json",
+            project_path=tmp_path / "p.json",
+        )
+        items = doctor_mod.check_settings(s)
+        # voicevox.engines は voicevox.engineUrl から derived される場合がある。
+        # derived origin を持つ任意のキーで確認する
+        derived_items = [i for i in items if "derived" in (i.detail or "")]
+        if derived_items:
+            d = derived_items[0]
+            assert "derived" in d.detail
+        # default origin（detail なし）のキーは source のみが表示される
+        default_items = [i for i in items if "default" in (i.detail or "")]
+        if default_items:
+            d = default_items[0]
+            assert "default" in d.detail
+
+    def test_check_paths_includes_settings_sources(self, tmp_path):
+        proj = tmp_path / "vvread.settings.json"
+        proj.write_text(json.dumps({"voicevox": {"speaker": 3}}))
+        s = settings_mod.load(
+            cwd=tmp_path, env={},
+            user_path=tmp_path / "u.json",
+            project_path=proj,
+        )
+        items = doctor_mod.check_paths(s)
+        details = [i.detail for i in items if i.label == "settings_file"]
+        assert any(str(proj) in d for d in details), \
+            f"settings_file path not found in paths section: {details}"
+
+    def test_collect_includes_paths_and_settings(self, tmp_path):
+        items = doctor_mod.collect(cwd=tmp_path, offline=True, scope="runtime")
+        assert any(i.section == "paths" for i in items)
+        assert any(i.section == "settings" for i in items)
 
 
 # ---------------------------------------------------------------------------
