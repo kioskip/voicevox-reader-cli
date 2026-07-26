@@ -639,19 +639,51 @@ def truncate(text: str, max_chars: int = MAX_CHARS) -> str:
     return text
 
 
-# ---------- 機密情報マスク (B-127) ----------
+# ---------- 機密情報マスク (B-127 / F-124) ----------
 
 _SECRET_RE = re.compile(
     r"""
     (?:
         sk-[A-Za-z0-9_\-]{20,}              # OpenAI / Anthropic API key (sk-proj- も包含)
-      | ghp_[A-Za-z0-9]{36}                 # GitHub PAT classic
-      | gho_[A-Za-z0-9]{36}                 # GitHub OAuth token
-      | github_pat_[A-Za-z0-9_]{82}         # GitHub PAT fine-grained
-      | (?i:password|passwd|token|api[_\-]?key|secret|authorization)\s*[:=]\s*\S+(?:\s+\S+)?
+      | ghp_[A-Za-z0-9]{36,}                # GitHub PAT classic (F-124: 可変長化)
+      | gho_[A-Za-z0-9]{36,}                # GitHub OAuth token (F-124: 可変長化)
+      | github_pat_[A-Za-z0-9_]{36,}        # GitHub PAT fine-grained (F-124: 82固定 → 可変長化)
+      | AKIA[0-9A-Z]{16}                    # AWS access key ID (F-124)
+      | AIza[0-9A-Za-z_\-]{35}              # Google API key (F-124)
+      | xox[baprs]-[0-9A-Za-z\-]{10,}       # Slack token (F-124)
+      | eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+
+                                             # JWT: header.payload.signature の 3 セグメント形式
+                                             # (F-124: 1 セグメント単独には反応しない)
+      | -----BEGIN\s+(?:[A-Z]+\s+)?PRIVATE\ KEY-----.*?-----END\s+(?:[A-Z]+\s+)?PRIVATE\ KEY-----
+                                             # PEM 秘密鍵ブロック全体(RSA/EC/OPENSSH/DSA/暗号化
+                                             # バリアント等を許容、F-124)
+      | -----BEGIN\s+(?:[A-Z]+\s+)?PRIVATE\ KEY-----
+                                             # 上記が END 行に届かない(本文が途切れている)場合の
+                                             # フォールバック: ヘッダ行のみマスク(F-124)
+      | (?i:password|passwd|token|api[_\-]?key|secret|authorization)\s*[:=：＝]\s*\S+(?:[ \t]\S+)?
+                                             # F-124: 全角セパレータ(：U+FF1A / ＝U+FF1D)を追加
+                                             # A-102 (撤回): 値部は ASCII 印字可能文字に制限せず
+                                             # \S+ (Unicode 対応、空白以外の全文字にマッチ)のまま
+                                             # にする。一時 ASCII 文字クラス制限を試みたが、
+                                             # `password: 秘密123` のような非ASCII(日本語)を含む
+                                             # 実秘密情報がマスクされず平文で漏れる回帰を Codex
+                                             # レビューで指摘された。過剰マスク(日本語文が丸ごと
+                                             # マスクされる)より秘密情報の非マスク漏れの方が深刻
+                                             # (fail-safe を失う)ため、\S+ に差し戻す。
+                                             # 意図的に長さキャップは設けない: 例えば「64文字で
+                                             # キャップ」する案は、64文字超の実秘密情報(長いJWT
+                                             # やAPIキー等)の後半が平文で漏れるという重大な設計
+                                             # ミスを生む(部分マスクによる新規の情報漏洩)。\S+ の
+                                             # 貪欲マッチであれば、長さに関係なく最後まで一致し
+                                             # フルマスクされるため、この問題は起きない。
+                                             # 2トークン目までの区切りは \s+(改行を含む)ではなく
+                                             # [ \t](空白・タブのみ)にする: \s+ のままだと改行を
+                                             # 跨いでマスクが次の行にまで伸びる可能性があるため。
+                                             # (この制限は非ASCII撤回の影響を受けない副作用のない
+                                             # 改善として維持する)
     )
     """,
-    re.VERBOSE,
+    re.VERBOSE | re.DOTALL,
 )
 
 

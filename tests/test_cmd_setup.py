@@ -208,10 +208,10 @@ class TestJsonOutput:
         assert r.returncode == 0
         payload = json.loads(r.stdout)
         assert isinstance(payload, list)
-        # receiver は --with-receiver 未指定で SKIPPED（opt-in 専用）
-        assert len(payload) == 5
+        # receiver / menubar は --with-* 未指定で SKIPPED（opt-in 専用）
+        assert len(payload) == 6
         steps = [item["step"] for item in payload]
-        assert steps == ["engine", "e2k", "hook", "mcp", "receiver"]
+        assert steps == ["engine", "e2k", "hook", "mcp", "receiver", "menubar"]
         for item in payload:
             assert item["status"] == "SKIPPED"
 
@@ -245,6 +245,50 @@ class TestSkipFlags:
         assert r.returncode == 0
         # hook はスキップされたので settings 作成なし
         assert not (cwd / ".claude" / "settings.local.json").exists()
+
+    def test_skip_menubar_only(self, tmp_path):
+        cwd, home, env = _setup_env(tmp_path)
+        r = run_setup(
+            "--yes", "--skip-engine", "--skip-e2k", "--skip-hook",
+            "--skip-menubar",
+            env_extra=env, cwd=cwd,
+        )
+        assert r.returncode == 0
+        assert "SKIPPED" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# --with-menubar (B-156)
+# ---------------------------------------------------------------------------
+#
+# fake_repo には .venv が無いため rumps 判定は常に False になり、register()
+# は launchctl を一切呼ばずに WARN を返す(実 launchctl 非依存で安全に検証
+# できる)。
+
+
+class TestMenubarFlag:
+    def test_with_menubar_no_rumps_is_warn_not_error(self, tmp_path):
+        cwd, home, env = _setup_env(tmp_path)
+        r = run_setup(
+            "--yes", "--skip-engine", "--skip-e2k", "--skip-hook",
+            "--with-menubar",
+            env_extra=env, cwd=cwd,
+        )
+        # rumps 不在は WARN 扱いなので exit 0 のまま
+        assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
+        assert "menubar" in r.stdout
+        # 実 LaunchAgent は登録されない(fake HOME に plist が無いことを確認)
+        assert not (
+            home / "Library" / "LaunchAgents" / "com.vvread.menubar.plist"
+        ).exists()
+
+    def test_skip_menubar_and_with_menubar_mutually_exclusive(self, tmp_path):
+        cwd, home, env = _setup_env(tmp_path)
+        r = run_setup(
+            "--yes", "--skip-menubar", "--with-menubar",
+            env_extra=env, cwd=cwd,
+        )
+        assert r.returncode == 2
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,22 @@ JSONC は line comment (`//`) のみ対応。block comment (`/* */`) は YAGNI�
 doctor (R-009) が warning として表示する。本モジュールは fatal にせず、
 解決可能な範囲は default fallback で進める(forward compat 重視)。
 
+F-123 (security): project スコープの `vvread.settings.json` は「リポジトリを
+clone しただけで確認なしに自動ロードされる」ため、project 層由来の
+`voicevox.engines` / `voicevox.engineUrl` が非ループバック(localhost /
+127.0.0.0/8 / ::1 以外)の URL を含む場合は拒否する(悪意ある project
+settings による読み上げテキストの外部送信を防ぐ、監査 H-1)。拒否は
+URL 単位(部分拒否)で、project 指定が全滅した場合のみ user → default へ
+フォールバックする(読み上げは止めない)。
+
+拒否を明示的に解除するには `security.trustedProjectEngines`(list)に
+許可 URL を列挙する。**このキーはカスケードの唯一の例外として user 層と
+環境変数 (`VVREAD_TRUSTED_PROJECT_ENGINES`) からのみ有効**で、project 層に
+同キーがあっても値は無視され parse_errors に警告が積まれる(悪意ある
+project settings が自分自身を allowlist に載せて拒否を解除する経路を
+塞ぐため)。env / user 層由来の engine URL 自体には非ループバック制限は
+課さない(信頼されたスコープであるため)。
+
 CLI:
   python settings.py get <dot.path> [--with-origin]
   python settings.py list [--json]
@@ -29,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import ipaddress
 import json
 import os
 import platform
@@ -76,6 +93,9 @@ SCHEMA: Dict[str, Tuple[Any, Optional[str], type]] = {
     "log.maxBytes":         (10485760, "VOICEVOX_LOG_MAX_BYTES", int),
     # 通知
     "notify.cooldownSec":   (60, "VOICEVOX_NOTIFY_COOLDOWN", int),
+    # security (F-123): project 層の非ループバック engine 拒否を明示解除する
+    # allowlist。契約: project 層では常に無効(user / env のみ有効)。
+    "security.trustedProjectEngines": (None, "VVREAD_TRUSTED_PROJECT_ENGINES", list),
 }
 
 
@@ -253,6 +273,100 @@ def engine_url_to_list(value: Any) -> List[str]:
     return []
 
 
+def _is_loopback_url(url: str) -> bool:
+    """URL の hostname が loopback (localhost / 127.0.0.0/8 / ::1) か判定する。
+
+    F-123: project 層由来の engine URL 検証に使う。`urlparse().hostname` は
+    IPv6 の `[...]` を剥がし小文字化済みの値を返すため、大文字小文字や
+    `[::1]` 表記の揺れをここで個別に吸収する必要はない。
+    """
+    host = urlparse(url).hostname
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _resolve_trusted_project_engines(
+    user_flat: Dict[str, Any],
+    env: Dict[str, str],
+) -> List[str]:
+    """`security.trustedProjectEngines` を project フィルタリングの前に解決する。
+
+    契約(カスケードの唯一の例外): このキーは project 層からは常に無視される
+    (呼び出し元が project_flat から該当キーを取り除き parse_errors に警告を
+    積む)。ここでは env > user > default([]) のみを見る。coercion 失敗時は
+    空 list として扱う(正式な parse_errors 報告は SCHEMA の通常 cascade
+    ループ側が本キーを解決する際に担当するため、ここでは静かに fallback する)。
+    """
+    env_var = SCHEMA["security.trustedProjectEngines"][1]
+    if env_var and env.get(env_var) is not None:
+        coerced, ok = _coerce(env[env_var], list)
+        return coerced if ok else []
+    raw = user_flat.get("security.trustedProjectEngines")
+    if raw is None:
+        return []
+    coerced, ok = _coerce(raw, list)
+    return coerced if ok else []
+
+
+def _filter_project_engine_value(
+    raw_value: Any,
+    trusted_normalized: set,
+    project_path_str: str,
+    parse_errors: List[Tuple[str, str]],
+    key: str,
+) -> Any:
+    """project 層の engine 値(`voicevox.engines` / `voicevox.engineUrl`)から
+    非ループバック・非 allowlist の URL を除去する(F-123)。
+
+    - loopback URL、または trusted_normalized(正規化済み allowlist)に完全
+      一致する URL は許可する
+    - 構文的に無効な URL(scheme / netloc 不正等)はここでは判定せず素通しする
+      (既存の normalize_engines / _coerce が後段で報告する責務を持つため、
+      二重にエラーを出さない)
+    - 何も拒否しなかった場合は raw_value をそのまま返す(型も含めて無変更、
+      挙動への影響を最小化する)
+    - 一部拒否: 残った候補のみの list を返す(部分拒否)
+    - 全滅: None を返す(呼び出し元は project 層の指定自体を無効化し、
+      user → default へフォールバックさせる)
+    """
+    candidates = raw_value if isinstance(raw_value, list) else [raw_value]
+    allowed: List[Any] = []
+    rejected = False
+    for item in candidates:
+        if not isinstance(item, str) or not item.strip():
+            allowed.append(item)
+            continue
+        url = item.strip().rstrip("/")
+        normalized, errs = normalize_engines([url])
+        if errs or not normalized:
+            # 構文的に無効な URL: loopback 判定の対象外、後段の既存検証に委ねる
+            allowed.append(item)
+            continue
+        canonical = normalized[0]
+        if _is_loopback_url(canonical) or canonical in trusted_normalized:
+            allowed.append(item)
+            continue
+        rejected = True
+        parse_errors.append((
+            project_path_str,
+            f"{key}: project settings の非ループバック engine を拒否しました "
+            f"({url!r})。許可するには user 層の security.trustedProjectEngines "
+            "に追加してください",
+        ))
+
+    if not rejected:
+        return raw_value
+    if not allowed:
+        return None
+    return allowed
+
+
 def _validate_engines(
     engines: list,
     parse_errors: List[Tuple[str, str]],
@@ -416,6 +530,39 @@ def load(
 
     user_flat = _flatten(user_data) if user_data else {}
     project_flat = _flatten(project_data) if project_data else {}
+
+    # F-123: security.trustedProjectEngines は project 層では常に無効
+    # (カスケードの唯一の例外)。悪意ある project settings が自分自身を
+    # allowlist に載せて非ループバック拒否を解除する経路を塞ぐため、
+    # 値は使わず警告のみ積んで project_flat から取り除く。
+    if "security.trustedProjectEngines" in project_flat:
+        project_flat.pop("security.trustedProjectEngines")
+        settings.parse_errors.append((
+            str(project_path),
+            "security.trustedProjectEngines: project 層の指定は無視されます"
+            "(user 層または環境変数 VVREAD_TRUSTED_PROJECT_ENGINES でのみ有効)",
+        ))
+
+    # F-123: project 層由来の engine URL のうち非ループバックかつ allowlist
+    # 未登録のものを拒否する(悪意ある project settings による読み上げ
+    # テキストの外部送信を防ぐ、監査 H-1)。allowlist(env > user のみ、
+    # project は上で無効化済み)を先に解決してから、project_flat の
+    # engines/engineUrl をその場でフィルタリングする。
+    trusted_project_engines = _resolve_trusted_project_engines(user_flat, env)
+    trusted_normalized = (
+        set(normalize_engines(trusted_project_engines)[0])
+        if trusted_project_engines else set()
+    )
+    for eng_key in ("voicevox.engines", "voicevox.engineUrl"):
+        if eng_key in project_flat:
+            filtered = _filter_project_engine_value(
+                project_flat[eng_key], trusted_normalized, str(project_path),
+                settings.parse_errors, eng_key,
+            )
+            if filtered is None:
+                del project_flat[eng_key]
+            else:
+                project_flat[eng_key] = filtered
 
     # 不明キー収集(known キーは下の cascade で消費される)
     known_keys = set(SCHEMA.keys())
@@ -582,7 +729,11 @@ def _cmd_env(args: argparse.Namespace) -> int:
             continue
         rv = settings.values[key]
         # 常にシングルクォートで囲む(数値・URLでも安全、将来の特殊文字にも対応)
-        if isinstance(rv.value, list):
+        # value=None(未設定の list 系キー、例: security.trustedProjectEngines)は
+        # 文字列 "None" ではなく空文字を出す(bash 側で未設定として扱えるように)
+        if rv.value is None:
+            val = ""
+        elif isinstance(rv.value, list):
             val = ";".join(str(v) for v in rv.value).replace("'", "'\"'\"'")
         else:
             val = str(rv.value).replace("'", "'\"'\"'")

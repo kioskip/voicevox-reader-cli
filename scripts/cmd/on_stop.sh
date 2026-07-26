@@ -29,7 +29,9 @@ source "${VVREAD_SCRIPTS_DIR}/lib/paths.sh"
 STATE_DIR="$(vvread_state_dir)"
 LOG_DIR="$(vvread_log_dir)"
 CACHE_DIR="$(vvread_cache_dir)"
-mkdir -p "${STATE_DIR}" "${LOG_DIR}" "${CACHE_DIR}"
+# L-4: 共有ホストで他ユーザーに読まれないよう umask 077 で新規作成する
+# (lib/queue.sh::vvread_queue_dirs_init と統一)。
+( umask 077; mkdir -p "${STATE_DIR}" "${LOG_DIR}" "${CACHE_DIR}" )
 vvread_migrate_legacy_tmp "${VVREAD_PROJECT_DIR}/tmp"
 
 # venv の python を優先(parse_transcript.py 用)

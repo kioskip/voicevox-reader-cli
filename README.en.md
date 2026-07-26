@@ -31,6 +31,7 @@ This tool **does not include VOICEVOX Engine, VOICEVOX Core, or any voice librar
 - 💾 **Wav cache**: short canned phrases (e.g. "完了しました") skip synthesis entirely.
 - 🧹 **Mispronunciation guards**: a sanitization pipeline for digits + counters, kanji-numeral dates, ASCII units, path elision, hash elision, and homographs (e.g. 「あの方」, 「最中」).
 - 🔤 **English-to-katakana**: optional `e2k` plus a built-in dictionary turn things like `Docker` into `ドッカー`.
+- 🖥️ **Menu bar app** (macOS, optional): `vvread menubar` controls playback state, the read-aloud/queue-mode toggles, temporary mute, stop/clear, and default settings (speaker plus 5 more parameters) from the menu bar.
 
 ---
 
@@ -170,9 +171,68 @@ You can run multiple VOICEVOX Engine instances for parallel synthesis. See [`CON
 
 ---
 
-## 7. Claude Code integration
+## 7. Menu bar app (macOS, optional)
 
-### 7-1. Adding to another project
+> Supported OS: **macOS only**. On other OSes it exits with a guidance message (the CLI itself is unaffected).
+
+`vvread menubar` is a menu bar app that lets you drive the commands above from a GUI. It doesn't talk to the VOICEVOX Engine directly — it just calls the `vvread` command in the background — so troubleshooting "no sound" / "won't stop" issues is the same as with the CLI (check `vvread doctor` / `vvread status`).
+
+### Launching it
+
+```bash
+vvread menubar
+```
+
+An icon appears in the menu bar and changes with the state: 🔊 idle / ▶ playing / 🔇 off / 🤫 muted / ⚠ status error. Launching a second instance is refused with "vvread menubar は既に起動中です" (already running).
+
+If the menu bar library (rumps) isn't installed yet, the app prints the install command (`uv sync`) and exits.
+
+### Menu items
+
+Opening the menu shows, top to bottom: status display, toggles, bulk actions, and quit:
+
+```
+State line / queue line / error-and-warning line (shown only when an action fails or reports a warning)
+──────────────
+Read-aloud (toggle) / Queue mode (toggle) / Temporary mute ▸ (5 min / 30 min / 1 hour / Cancel)
+──────────────
+Stop current playback / Clear queue / Default settings ▸
+──────────────
+Quit vvread menubar
+```
+
+The state line is now one of four combined states: 🟢 (running — shown for both idle and playing) / 🟡 (muted — shown as an absolute "muted until HH:MM") / 🔴 (stopped) / ⚠ (status fetch error; shows "unknown" before the first successful fetch).
+
+| Item | What it does |
+|---|---|
+| State line / queue line | Shows the current state (🟢/🟡/🔴/⚠) and the pending / playing / failed counts (display only) |
+| Read-aloud | A checkmark toggle. Click to switch, same as `vvread on` / `vvread off` |
+| Queue mode | A checkmark toggle. Click to switch, same as `vvread queue on` / `vvread queue off` |
+| Temporary mute ▸ 5 min / 30 min / 1 hour / Cancel | Same as `vvread mute` / `vvread unmute`. While muted, the state line also shows the time it will be lifted |
+| Stop current playback | Stops current playback and clears everything pending (same as `vvread stop`) |
+| Clear queue | Leaves current playback running, clears only what's pending (same as `vvread queue clear`) |
+| Default settings ▸ Speaker / Volume / Speed / Intonation / Pause scale / Max chunks | Pick a value from each submenu. The chosen value is written with `vvread config --set` at user scope, and a checkmark shows the current value. The speaker submenu also has "Reload" |
+| Quit vvread menubar | Quits the menu bar app (does not change read-aloud settings or the queue) |
+
+The status display refreshes automatically every few seconds. The speaker list and the 6 settings (speaker / volume / speed / intonation / pause scale / max chunks) are fetched at launch, when you click "Default settings ▸ Speaker ▸ Reload", and automatically retried (every 30s) while a fetch is failing.
+
+### Changed a default setting but it didn't take effect?
+
+Picking a value under "Default settings" — speaker, volume, speed, intonation, pause scale, or max chunks — writes to the shared, all-projects (user-scope) setting. If a project's own `vvread.settings.json` overrides that same parameter, the menu bar's choice may not take effect — in that case, for any of these six parameters, a warning "他スコープの設定が優先されています" (a setting in another scope takes priority) is shown in the menu's error/warning line. Check that project's settings file.
+
+### Quitting
+
+Choose "Quit vvread menubar" from the menu, or press `Ctrl-C` if you launched it from a terminal. Either way, this does not affect the read-aloud feature itself (CLI / Stop hook).
+
+### Auto-start at login (LaunchAgent, optional)
+
+Answer Yes to "Enable menubar auto-start on login?" during the `vvread setup` prompts, or run `vvread setup --with-menubar`, and `vvread menubar` will start automatically at login (registered at `~/Library/LaunchAgents/com.vvread.menubar.plist`). To remove it, run `vvread uninstall --with-menubar`.
+
+---
+
+## 8. Claude Code integration
+
+### 8-1. Adding to another project
 
 > **Note**: If you ran `vvread setup`, hook registration was already completed during setup.
 > You do not need to run `vvread install` again for the same project.
@@ -198,7 +258,7 @@ This appends the following to `hooks.Stop[].hooks[]` in `~/.claude/settings.json
 
 **Why `timeout: 600` (seconds)**: long responses (~5,000 characters) can take over five minutes to synthesise and play. Because `async: true` means Claude itself is not waiting, a generous timeout avoids cutoffs.
 
-### 7-2. Register as an MCP server (optional)
+### 8-2. Register as an MCP server (optional)
 
 > **Note**: MCP integration is an **additional feature**, not a replacement for the Stop hook or CLI.
 > Existing read-aloud functionality works without the `mcp` package.
@@ -229,7 +289,7 @@ For **channel integration** (experimental) — receiving external events (CI com
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 ### No sound
 
@@ -256,7 +316,7 @@ Check `hook async=true` with `vvread doctor`. If `async` is disabled, the hook r
 
 ---
 
-## 9. License / credits
+## 10. License / credits
 
 - This CLI code: **MIT License** (see [`LICENSE`](LICENSE)).
 - VOICEVOX Engine / Core / voice libraries are **not** included. Comply with their respective terms separately.
@@ -265,6 +325,6 @@ Check `hook async=true` with `vvread doctor`. If `async` is disabled, the hook r
 
 ---
 
-## 10. CHANGELOG
+## 11. CHANGELOG
 
 See [`CHANGELOG.md`](CHANGELOG.md). Keep a Changelog format + semver.

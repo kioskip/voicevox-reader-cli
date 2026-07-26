@@ -60,20 +60,23 @@ Usage: vvread [<text>] [--speaker N]
 制御系:
   stop                          再生中の音を即停止
   mute <duration>               一定時間ミュート (例: 30s, 5m, 2h)
+  unmute                        ミュートだけを解除（off 状態は維持）
   off                           永続オフ (`vvread on` まで)
   on                            復帰
-  status                        現状表示
+  status [--json]               現状表示
   clean                         古い一時ファイルを削除
   queue <on|off|status|clear>   キュー再生モード（割り込まず順番に再生）
 
 管理系:
   install [--scope SCOPE]       Claude Code hook を現在のプロジェクトに登録（hook のみ。初回は setup 推奨）
-  uninstall [--scope SCOPE]     hook 登録解除
+  uninstall [--scope SCOPE] [--with-menubar]
+                                 hook 登録解除（--with-menubar でログイン時自動起動 LaunchAgent も解除、macOS のみ）
   doctor [--offline]            ヘルスチェック
-  setup [--engine MODE]         初回セットアップ（Engine 接続確認・依存確認・hook 登録・project settings 作成を一括実行）
+  setup [--engine MODE]         初回セットアップ（Engine 接続確認・依存確認・hook 登録・project settings 作成を一括実行。--with-menubar で menubar 自動起動も設定、macOS のみ）
   speakers                      利用可能な speaker 一覧を表示
   config [--list]               設定をインタラクティブに編集。--list で全キーと現在値を一覧表示
   edit                          config のエイリアス
+  menubar                       メニューバー常駐 UI を起動（macOS のみ）
 
 ヘルプ:
   -h, --help, help              この usage を表示
@@ -89,7 +92,7 @@ EOF
 # NOTE: 新しい subcommand を追加したら必ずここも更新すること
 _is_subcommand() {
   case "$1" in
-    help|-h|--help|say|synth|play|on-stop|stop|mute|off|on|status|clean|install|uninstall|doctor|setup|speakers|config|edit|file|url|mcp|queue)
+    help|-h|--help|say|synth|play|on-stop|stop|mute|unmute|off|on|status|clean|install|uninstall|doctor|setup|speakers|config|edit|file|url|mcp|queue|menubar)
       return 0
       ;;
     *)
@@ -143,7 +146,7 @@ case "${subcommand}" in
     exit 0
     ;;
   # 制御系: 既存 voice.sh 実装に委譲(R-005+ で本体統合予定)
-  stop|mute|off|on|status|clean)
+  stop|mute|unmute|off|on|status|clean)
     cd / 2>/dev/null || true
     exec "${VVREAD_SCRIPTS_DIR}/voice.sh" "${subcommand}" "$@"
     ;;
@@ -199,6 +202,9 @@ case "${subcommand}" in
     ;;
   queue)
     exec "${VVREAD_SCRIPTS_DIR}/cmd/queue.sh" "$@"
+    ;;
+  menubar)
+    exec "${VVREAD_SCRIPTS_DIR}/cmd/menubar.sh" "$@"
     ;;
   *)
     if _is_subcommand "${subcommand}"; then

@@ -162,6 +162,17 @@ class TestOfflineAndScope:
         assert "gitleaks" not in r.stdout
         assert "shellcheck" not in r.stdout
 
+    def test_rumps_dependency_line_present(self, tmp_path):
+        """rumps (B-151, macOS menubar UI) は runtime/optional として
+        dependencies セクションに現れる。macOS/非macOS どちらの実行環境でも
+        「見つからない」か「対象外」のいずれかで INFO 表示され、ERROR には
+        ならない(必須ではないため exit code に影響しない)。"""
+        env = _path_env(tmp_path)
+        env["HOME"] = str(tmp_path / "home")
+        r = run_doctor("--offline", env_extra=env, cwd=tmp_path)
+        assert r.returncode == 0
+        assert "rumps" in r.stdout
+
     def test_scope_all_includes_dev_publish(self, tmp_path):
         env = _path_env(tmp_path)
         env["HOME"] = str(tmp_path / "home")

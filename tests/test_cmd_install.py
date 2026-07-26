@@ -385,6 +385,48 @@ class TestUninstallDryRunIntegration:
 
 
 # ---------------------------------------------------------------------------
+# uninstall --with-menubar (B-156)
+# ---------------------------------------------------------------------------
+#
+# env["HOME"] を tmp_path 配下に向けているため、実 ~/Library/LaunchAgents/
+# には一切触れない。plist が存在しない場合は no-op（launchctl を呼ばない）
+# ため、実 launchctl 呼び出しを一切発生させずに検証できる。
+
+
+class TestUninstallMenubarFlag:
+    def test_with_menubar_noop_when_no_plist_exits_0(self, tmp_path):
+        cwd, home, env = _setup_env(tmp_path)
+        r = run_uninstall("--with-menubar", env_extra=env, cwd=cwd)
+        assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
+        assert "LaunchAgent" in r.stdout
+        assert not (
+            home / "Library" / "LaunchAgents" / "com.vvread.menubar.plist"
+        ).exists()
+
+    def test_with_menubar_dry_run_no_change(self, tmp_path):
+        cwd, home, env = _setup_env(tmp_path)
+        r = run_uninstall("--with-menubar", "--dry-run", env_extra=env, cwd=cwd)
+        assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
+
+    def test_with_menubar_runs_independently_of_hook_failure(self, tmp_path):
+        """hook 側が broken JSON で ERROR でも menubar 解除は独立して試行される"""
+        cwd, home, env = _setup_env(tmp_path)
+        target = cwd / ".claude" / "settings.local.json"
+        target.parent.mkdir(parents=True)
+        target.write_text("{ broken", encoding="utf-8")
+        r = run_uninstall("--with-menubar", env_extra=env, cwd=cwd)
+        # hook 解除は ERROR (broken JSON) → exit 1 だが menubar 側のメッセージは出る
+        assert r.returncode == 1
+        assert "LaunchAgent" in r.stdout
+
+    def test_vvread_uninstall_with_menubar_dispatches(self, tmp_path):
+        cwd, home, env = _setup_env(tmp_path)
+        r = run_vvread_uninstall("--with-menubar", env_extra=env, cwd=cwd)
+        assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
+        assert "LaunchAgent" in r.stdout
+
+
+# ---------------------------------------------------------------------------
 # bin/vvread dispatch
 # ---------------------------------------------------------------------------
 

@@ -46,9 +46,25 @@ _log_rotate_if_needed() {
 # ログ出力先のディレクトリは初回 source 時に確実に作る。
 # OFF の場合は書き込まないので mkdir も rotate も不要。
 if [ "${LOG_LEVEL_NUM}" -gt 0 ]; then
-  mkdir -p "$(dirname "${LOG_FILE}")" 2>/dev/null || true
+  # L-4: 共有ホストで他ユーザーに読まれないよう umask 077 で新規作成する
+  ( umask 077; mkdir -p "$(dirname "${LOG_FILE}")" ) 2>/dev/null || true
   _log_rotate_if_needed
 fi
+
+# C1 制御文字(U+0080-U+009F、例: U+009B=CSI)の UTF-8 2-byte 表現
+# (\xc2\x80-\xc2\x9f)を除去するためのパターン一覧。source 時に一度だけ構築し、
+# _log_write の呼び出しごとの再構築を避ける。
+# 単独バイト範囲([$'\x80'-$'\x9f'] 等)でのマッチはロケール依存で不安定な上、
+# 日本語等マルチバイト文字の継続バイト(0x80-0xBF は C1 の範囲と重なる)まで
+# 削ってしまう。必ず先頭バイト \xc2 との 2-byte ペア全体を literal 列挙して
+# のみ除去することで、この事故を避ける(Codex レビュー指摘: C0 のみ除去では
+# U+009B 等の C1 制御文字による ANSI 注入がすり抜けていた)。
+_LOG_C1_PATTERNS=(
+  $'\xc2\x80' $'\xc2\x81' $'\xc2\x82' $'\xc2\x83' $'\xc2\x84' $'\xc2\x85' $'\xc2\x86' $'\xc2\x87'
+  $'\xc2\x88' $'\xc2\x89' $'\xc2\x8a' $'\xc2\x8b' $'\xc2\x8c' $'\xc2\x8d' $'\xc2\x8e' $'\xc2\x8f'
+  $'\xc2\x90' $'\xc2\x91' $'\xc2\x92' $'\xc2\x93' $'\xc2\x94' $'\xc2\x95' $'\xc2\x96' $'\xc2\x97'
+  $'\xc2\x98' $'\xc2\x99' $'\xc2\x9a' $'\xc2\x9b' $'\xc2\x9c' $'\xc2\x9d' $'\xc2\x9e' $'\xc2\x9f'
+)
 
 # ms 精度の epoch(macOS の date は %N 非対応なので perl を使う)
 _now_ms() {
@@ -60,11 +76,24 @@ _log_write() {
   local need="$1"; shift
   local lvl="$1"; shift
   [ "${LOG_LEVEL_NUM}" -ge "${need}" ] || return 0
-  local now ms3 ts
+  local now ms3 ts msg
   now=$(_now_ms)
   ms3=$(printf '%03d' $(( now % 1000 )))
   ts=$(date +"%Y-%m-%d %H:%M:%S")
-  printf '[%s.%s] %s.%-5s [%d]: %s\n' "${ts}" "${ms3}" "${LOG_NAME}" "${lvl}" "$$" "$*" >> "${LOG_FILE}"
+  # L-3bash (defense in depth): ESC(\x1b) / CR(\x0d) / C1 制御文字を除去して
+  # ログ偽装(ANSI エスケープでの表示改ざん・行の上書き)を防ぐ。ここは全 log
+  # 呼び出しのホットパスなのでサブプロセス起動(tr 等)は避け、pure bash 置換
+  # (builtin のみ、fork なし)で済ませる。C1 は _LOG_C1_PATTERNS 参照。
+  # untrusted テキストがそのまま渡る箇所(say.sh の enqueue プレビュー等)は
+  # 呼び出し元で Unicode カテゴリベースの除去によりさらに厳密に無害化する。
+  msg="$*"
+  msg="${msg//$'\x1b'/}"
+  msg="${msg//$'\r'/}"
+  local _c1
+  for _c1 in "${_LOG_C1_PATTERNS[@]}"; do
+    msg="${msg//${_c1}/}"
+  done
+  printf '[%s.%s] %s.%-5s [%d]: %s\n' "${ts}" "${ms3}" "${LOG_NAME}" "${lvl}" "$$" "${msg}" >> "${LOG_FILE}"
 }
 
 log_warn()  { _log_write 1 "WARN"  "$@"; }

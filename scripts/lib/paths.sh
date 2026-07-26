@@ -105,7 +105,8 @@ vvread_migrate_legacy_tmp() {
   local name
   for name in disabled mute_until last_notify; do
     if [ -e "${legacy_dir}/${name}" ] && [ ! -e "${state_dir}/${name}" ]; then
-      mkdir -p "${state_dir}"
+      # L-4: 共有ホストで他ユーザーに読まれないよう umask 077 で新規作成する
+      ( umask 077; mkdir -p "${state_dir}" )
       cp -p "${legacy_dir}/${name}" "${state_dir}/${name}" 2>/dev/null || true
     fi
   done
@@ -117,7 +118,8 @@ vvread_migrate_legacy_tmp() {
       [ -f "${wav}" ] || continue   # glob unmatched
       base=$(basename "${wav}")
       if [ ! -e "${cache_dir}/${base}" ]; then
-        mkdir -p "${cache_dir}"
+        # L-4: 共有ホストで他ユーザーに読まれないよう umask 077 で新規作成する
+        ( umask 077; mkdir -p "${cache_dir}" )
         cp -p "${wav}" "${cache_dir}/${base}" 2>/dev/null || true
       fi
     done
@@ -125,7 +127,8 @@ vvread_migrate_legacy_tmp() {
 
   # ログ: 新側に既存があればスキップ(append 状態を壊さない)
   if [ -f "${legacy_dir}/logs/speak.log" ] && [ ! -f "${log_dir}/speak.log" ]; then
-    mkdir -p "${log_dir}"
+    # L-4: 共有ホストで他ユーザーに読まれないよう umask 077 で新規作成する
+    ( umask 077; mkdir -p "${log_dir}" )
     cp -p "${legacy_dir}/logs/speak.log" "${log_dir}/speak.log" 2>/dev/null || true
   fi
 }

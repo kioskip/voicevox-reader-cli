@@ -1090,6 +1090,14 @@ def _cmd_install(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def _emit_menubar_unregister(result: Any) -> None:
+    """launch_agent.unregister() の結果を表示する(B-156)。"""
+    prefix = "[dry-run] " if result.dry_run else ""
+    print(f"{prefix}{result.message}")
+    if not result.ok and result.error:
+        print(f"ERROR: {result.error}", file=sys.stderr)
+
+
 def _cmd_uninstall(args: argparse.Namespace) -> int:
     scope, warn = _resolve_scope_alias(args.scope)
     if warn:
@@ -1099,7 +1107,25 @@ def _cmd_uninstall(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
     )
     _emit_uninstall(result)
-    return 1 if result.error else 0
+    exit_code = 1 if result.error else 0
+
+    # Stop hook 解除とは独立に動作させる(hook 解除が失敗しても menubar 解除は
+    # 試行する、逆も然り)。B-156
+    if getattr(args, "with_menubar", False):
+        # 遅延 import: launch_agent → doctor → hook_install の循環 import を
+        # 避けるため(interactive_install 内の settings import と同じ理由)。
+        import launch_agent as _la  # noqa: PLC0415 (遅延 import: 循環防止)
+
+        la_result = _la.unregister(
+            home=Path.home(),
+            uid=os.getuid(),
+            dry_run=args.dry_run,
+        )
+        _emit_menubar_unregister(la_result)
+        if not la_result.ok:
+            exit_code = 1
+
+    return exit_code
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -1162,6 +1188,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_uninstall.add_argument(
         "--dry-run", action="store_true",
         help="do not write any file, just report what would change",
+    )
+    p_uninstall.add_argument(
+        "--with-menubar", action="store_true",
+        help=(
+            "ユーザー全体の LaunchAgent(ログイン時自動起動)も解除します"
+            "(macOS only, B-156)"
+        ),
     )
     p_uninstall.set_defaults(func=_cmd_uninstall)
 

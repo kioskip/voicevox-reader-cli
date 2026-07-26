@@ -91,6 +91,7 @@ class TestCatalogIntegrity:
         assert "uv" in names
         # runtime optional
         assert "e2k" in names
+        assert "rumps" in names
         # dev
         assert "shellcheck" in names
         assert "ruff" in names
@@ -98,6 +99,38 @@ class TestCatalogIntegrity:
         # publish
         assert "gitleaks" in names
         assert "gh" in names
+
+
+# ---------------------------------------------------------------------------
+# rumps (B-151: macOS menubar UI, core dependency with darwin marker)
+# ---------------------------------------------------------------------------
+
+
+class TestRumpsEntry:
+    """rumps は pyproject.toml のコア依存 (`sys_platform == 'darwin'` marker)
+    だが、非 macOS では marker によりそもそも導入されないため catalog 上は
+    runtime/optional として登録する(B-151 P2a)。"""
+
+    def test_registered_as_runtime_optional(self):
+        d = deps_module.by_name("rumps")
+        assert d is not None
+        assert d.kind == "optional"
+        assert d.category == "runtime"
+
+    def test_check_command_imports_rumps_via_python(self):
+        d = deps_module.by_name("rumps")
+        assert d.check_command == ["python3", "-c", "import rumps"]
+
+    def test_install_hint_is_macos_only(self):
+        """Linux/WSL 向けの install_hint を持たない(macOS 専用機能のため
+        pip 手順を案内すると誤解を招く)。"""
+        d = deps_module.by_name("rumps")
+        assert "macos" in d.install_hint
+        assert "linux" not in d.install_hint
+
+    def test_fallback_mentions_menubar_only_impact(self):
+        d = deps_module.by_name("rumps")
+        assert "menubar" in d.fallback
 
 
 # ---------------------------------------------------------------------------

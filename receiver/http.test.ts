@@ -78,4 +78,68 @@ describe('createHttpServer', () => {
     expect(srv.port).toBeGreaterThan(0)
     srv.stop(true)
   })
+
+  it('Origin ヘッダなし POST → 202 維持（既存クライアント互換）', async () => {
+    const srv = createHttpServer(0, noop)
+    const res = await fetch(`http://127.0.0.1:${srv.port}/`, {
+      method: 'POST',
+      body: 'CI が main ブランチで失敗しました',
+    })
+    expect(res.status).toBe(202)
+    srv.stop(true)
+  })
+
+  it('Origin ヘッダ付き POST → 403（ブラウザ発 CSRF 拒否）', async () => {
+    const srv = createHttpServer(0, noop)
+    const res = await fetch(`http://127.0.0.1:${srv.port}/`, {
+      method: 'POST',
+      body: 'evil',
+      headers: { Origin: 'http://evil.example' },
+    })
+    expect(res.status).toBe(403)
+    srv.stop(true)
+  })
+
+  it('Host が evil.example → 403（DNS rebinding 拒否）', async () => {
+    const srv = createHttpServer(0, noop)
+    const res = await fetch(`http://127.0.0.1:${srv.port}/`, {
+      method: 'POST',
+      body: 'evil',
+      headers: { Host: 'evil.example' },
+    })
+    expect(res.status).toBe(403)
+    srv.stop(true)
+  })
+
+  it('Host が localhost:port → 許可', async () => {
+    const srv = createHttpServer(0, noop)
+    const res = await fetch(`http://127.0.0.1:${srv.port}/`, {
+      method: 'POST',
+      body: 'ok',
+      headers: { Host: `localhost:${srv.port}` },
+    })
+    expect(res.status).toBe(202)
+    srv.stop(true)
+  })
+
+  it('Host が [::1]:port → 許可', async () => {
+    const srv = createHttpServer(0, noop)
+    const res = await fetch(`http://127.0.0.1:${srv.port}/`, {
+      method: 'POST',
+      body: 'ok',
+      headers: { Host: `[::1]:${srv.port}` },
+    })
+    expect(res.status).toBe(202)
+    srv.stop(true)
+  })
+
+  it('Origin なし + Host が evil.example → 403（Host 検証は Origin 有無に依存しない）', async () => {
+    const srv = createHttpServer(0, noop)
+    const res = await fetch(`http://127.0.0.1:${srv.port}/`, {
+      method: 'GET',
+      headers: { Host: 'evil.example' },
+    })
+    expect(res.status).toBe(403)
+    srv.stop(true)
+  })
 })

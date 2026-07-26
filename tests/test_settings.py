@@ -284,13 +284,18 @@ class TestJsonc:
         assert s.parse_errors == []
 
     def test_escaped_quote_in_string(self, tmp_path):
-        """エスケープされた quote で string が早期終了しない"""
+        """エスケープされた quote で string が早期終了しない
+
+        voicevox.engineUrl は F-123(project 層の非ループバック engine 拒否)の
+        検証対象になるため、この JSONC 挙動テストとは無関係に log.level
+        (str 型・非対象キー)を使って確認する。
+        """
         text = r'''{
-  "voicevox": { "engineUrl": "http://example.com/\"path\"//x" }
+  "log": { "level": "http://example.com/\"path\"//x" }
 }'''
         s = _load(tmp_path, project_text=text)
         # エスケープ quote 経由で string を抜けない → // は string 内なので保持
-        assert s.get("voicevox.engineUrl").value == 'http://example.com/"path"//x'
+        assert s.get("log.level").value == 'http://example.com/"path"//x'
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +553,30 @@ class TestCliEnv:
         assert r.returncode == 0
         assert "VOICEVOX_SPEAKER='3'" in r.stdout, "存在しないパスの場合 default (3) にならない"
 
+    def test_env_subcommand_rejects_malicious_project_engine(self, tmp_path):
+        """F-123: `settings.py env` サブコマンド経由(bash 側の実際の取り込み経路)
+        でも project の非ループバック engine 拒否が効くこと。
+
+        HOME を空の tmp ディレクトリへ隔離し、実行機の実 user settings.json
+        (~/Library/Application Support/vvread/settings.json 等)の影響を排除する。
+        """
+        evil_project = tmp_path / "evil.settings.json"
+        evil_project.write_text(
+            json.dumps({"voicevox": {"engines": ["http://attacker.example:50021"]}}),
+            encoding="utf-8",
+        )
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        r = _run_cli(
+            "env", "--project-settings", str(evil_project),
+            env={"HOME": str(fake_home)},
+            cwd=str(tmp_path),
+        )
+        assert r.returncode == 0
+        assert "attacker.example" not in r.stdout
+        assert "VOICEVOX_ENGINE_URL='http://127.0.0.1:50021'" in r.stdout
+        assert "VOICEVOX_ENGINES='http://127.0.0.1:50021'" in r.stdout
+
 
 class TestChunkingSchema:
     """R-036: settings.json に追加した chunking 系 3 キーのテスト"""
@@ -660,12 +689,13 @@ class TestEngines:
 
     def test_engine_url_list_no_string_garbage(self, tmp_path):
         """回帰: list engineUrl が _coerce で str() 化された 1 要素ゴミ
-        (\"['http://a', 'http://b']\") にならないこと。"""
+        (\"['http://127.0.0.1:50021', 'http://127.0.0.1:50022']\") にならないこと。
+        (F-123 の非ループバック拒否と混同しないよう loopback URL を使う)"""
         s = _load(tmp_path, project_data={
-            "voicevox": {"engineUrl": ["http://a:50021", "http://b:50022"]}
+            "voicevox": {"engineUrl": ["http://127.0.0.1:50021", "http://127.0.0.1:50022"]}
         })
         rv = s.get("voicevox.engines")
-        assert rv.value == ["http://a:50021", "http://b:50022"]
+        assert rv.value == ["http://127.0.0.1:50021", "http://127.0.0.1:50022"]
         for u in rv.value:
             assert not u.startswith("["), f"stringified garbage leaked: {u!r}"
 
@@ -687,13 +717,148 @@ class TestEngines:
         assert any("voicevox.engineUrl" in msg for _, msg in s.parse_errors)
 
     def test_engines_key_wins_over_engine_url_list(self, tmp_path):
-        """engineUrl(list) と engines 併存 → engines 優先。"""
+        """engineUrl(list) と engines 併存 → engines 優先。
+        (F-123 の非ループバック拒否と混同しないよう loopback URL を使う)"""
         s = _load(tmp_path, project_data={"voicevox": {
-            "engineUrl": ["http://old:50021"],
-            "engines": ["http://new:50021"],
+            "engineUrl": ["http://127.0.0.1:50021"],
+            "engines": ["http://127.0.0.1:50029"],
         }})
         rv = s.get("voicevox.engines")
-        assert rv.value == ["http://new:50021"]
+        assert rv.value == ["http://127.0.0.1:50029"]
+
+
+# ---------------------------------------------------------------------------
+# F-123: project 層の非ループバック engine 拒否 + security.trustedProjectEngines
+# ---------------------------------------------------------------------------
+
+
+class TestTrustedProjectEngines:
+    """悪意ある project vvread.settings.json が engine を外部ホストへ向けて
+    読み上げテキストを流出させる経路(監査 H-1)への防御を検証する。"""
+
+    def test_malicious_project_engines_rejected_falls_back_to_default(self, tmp_path):
+        s = _load(tmp_path, project_data={
+            "voicevox": {"engines": ["http://attacker.example:50021"]}
+        })
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://127.0.0.1:50021"]
+        assert rv.origin.source == "derived"
+        assert any(
+            "非ループバック" in msg and "attacker.example" in msg
+            for _, msg in s.parse_errors
+        )
+
+    def test_malicious_project_engine_url_string_rejected_falls_back(self, tmp_path):
+        """engineUrl(単一 str)形式でも同様に拒否される"""
+        s = _load(tmp_path, project_data={
+            "voicevox": {"engineUrl": "http://attacker.example:50021"}
+        })
+        rv = s.get("voicevox.engineUrl")
+        assert rv.value == "http://127.0.0.1:50021"
+        assert any("非ループバック" in msg for _, msg in s.parse_errors)
+
+    def test_partial_rejection_keeps_loopback_url(self, tmp_path):
+        """一部だけ非ループバックなら該当 URL のみ除外し、残りは project 由来のまま使う"""
+        s = _load(tmp_path, project_data={
+            "voicevox": {"engines": [
+                "http://attacker.example:50021",
+                "http://127.0.0.1:50022",
+            ]}
+        })
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://127.0.0.1:50022"]
+        assert rv.origin.source == "project"
+        assert any("attacker.example" in msg for _, msg in s.parse_errors)
+
+    def test_user_allowlist_permits_specific_remote_engine(self, tmp_path):
+        """user 層の security.trustedProjectEngines に載せた URL は project からでも許可"""
+        s = _load(
+            tmp_path,
+            user_data={"security": {
+                "trustedProjectEngines": ["http://allowed.example:50021"]
+            }},
+            project_data={"voicevox": {"engines": ["http://allowed.example:50021"]}},
+        )
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://allowed.example:50021"]
+        assert rv.origin.source == "project"
+        assert s.parse_errors == []
+
+    def test_allowlist_does_not_permit_other_remote_engines(self, tmp_path):
+        """allowlist は正規化後 URL の完全一致のみ。載っていない別 URL は依然拒否"""
+        s = _load(
+            tmp_path,
+            user_data={"security": {
+                "trustedProjectEngines": ["http://allowed.example:50021"]
+            }},
+            project_data={"voicevox": {"engines": ["http://other.example:50021"]}},
+        )
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://127.0.0.1:50021"]
+        assert any("other.example" in msg for _, msg in s.parse_errors)
+
+    def test_project_layer_trusted_project_engines_ignored(self, tmp_path):
+        """project 層に security.trustedProjectEngines を書いても無視され警告が積まれる
+        (悪意ある project settings が自分自身を allowlist に載せて拒否を解除できない)"""
+        s = _load(
+            tmp_path,
+            project_data={
+                "voicevox": {"engines": ["http://attacker.example:50021"]},
+                "security": {
+                    "trustedProjectEngines": ["http://attacker.example:50021"]
+                },
+            },
+        )
+        rv = s.get("voicevox.engines")
+        # allowlist が有効化されていれば通るはずの URL が、依然拒否される
+        assert rv.value == ["http://127.0.0.1:50021"]
+        assert any(
+            "trustedProjectEngines" in msg and "無視" in msg
+            for _, msg in s.parse_errors
+        )
+        # security.trustedProjectEngines 自体は project からは解決されない(default のまま)
+        trusted_rv = s.get("security.trustedProjectEngines")
+        assert trusted_rv.value is None
+        assert trusted_rv.origin.source == "default"
+
+    def test_user_layer_remote_engine_not_restricted(self, tmp_path):
+        """user 層由来の engine は allowlist なしでも非ループバックを許可する"""
+        s = _load(tmp_path, user_data={
+            "voicevox": {"engines": ["http://remote.example:50021"]}
+        })
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://remote.example:50021"]
+        assert rv.origin.source == "user"
+        assert s.parse_errors == []
+
+    def test_env_remote_engine_not_restricted_and_wins(self, tmp_path):
+        """env 由来の engine は制限されず、project の拒否対象より優先される"""
+        s = _load(
+            tmp_path,
+            env={"VOICEVOX_ENGINES": "http://remote.example:50021"},
+            project_data={"voicevox": {"engines": ["http://attacker.example:50021"]}},
+        )
+        rv = s.get("voicevox.engines")
+        assert rv.value == ["http://remote.example:50021"]
+        assert rv.origin.source == "env"
+
+    def test_loopback_variants_allowed(self, tmp_path):
+        """localhost / 127.0.0.0/8 / ::1 はすべて loopback として許可される"""
+        s = _load(tmp_path, project_data={
+            "voicevox": {"engines": [
+                "http://localhost:50021",
+                "http://127.5.6.7:50022",
+                "http://[::1]:50023",
+            ]}
+        })
+        rv = s.get("voicevox.engines")
+        assert rv.value == [
+            "http://localhost:50021",
+            "http://127.5.6.7:50022",
+            "http://[::1]:50023",
+        ]
+        assert rv.origin.source == "project"
+        assert s.parse_errors == []
 
 
 # ---------------------------------------------------------------------------
@@ -847,17 +1012,18 @@ class TestEnginesRuntimeExport:
         assert rv_url.origin.source == "env"
 
     def test_engines_and_engine_url_both_set_engines_wins(self, tmp_path):
-        """project に engineUrl + engines が両方ある → engines 優先、engineUrl=engines[0]。"""
+        """project に engineUrl + engines が両方ある → engines 優先、engineUrl=engines[0]。
+        (F-123 の非ループバック拒否と混同しないよう loopback URL を使う)"""
         s = _load(tmp_path, project_data={
             "voicevox": {
-                "engineUrl": "http://old:50021",
-                "engines": ["http://new:50021", "http://new2:50022"],
+                "engineUrl": "http://127.0.0.1:50021",
+                "engines": ["http://127.0.0.1:50031", "http://127.0.0.1:50032"],
             }
         })
         rv_url = s.get("voicevox.engineUrl")
         rv_engines = s.get("voicevox.engines")
-        assert rv_engines.value == ["http://new:50021", "http://new2:50022"]
-        assert rv_url.value == "http://new:50021"
+        assert rv_engines.value == ["http://127.0.0.1:50031", "http://127.0.0.1:50032"]
+        assert rv_url.value == "http://127.0.0.1:50031"
         assert rv_url.origin.source == "derived"
 
     def test_env_engine_url_export_matches_env_value(self):

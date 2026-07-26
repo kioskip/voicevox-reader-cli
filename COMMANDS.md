@@ -53,9 +53,11 @@ vvread say "急ぎ発話" --queue --speed 2.0   # キューモードでも1エ�
 |---|---|
 | `vvread stop` | 再生中の音を即停止（次の発話は受け付ける） |
 | `vvread mute <duration>` | 一定時間ミュート（例: `30s`, `5m`, `2h`） |
+| `vvread unmute` | ミュートだけを解除（`off` 状態は維持。`off` 中に呼んでも読み上げは再開しない） |
 | `vvread off` | 永続オフ（`vvread on` まで） |
 | `vvread on` | 復帰 |
-| `vvread status` | 現状表示 |
+| `vvread status` | 現状表示（`disabled` / `muted` / `playing` / `idle`） |
+| `vvread status --json` | 現状を機械可読な 1 行 JSON で出力（ローカルの状態ファイルのみ参照。VOICEVOX Engine への通信なし） |
 | `vvread clean` | 一時 wav の削除（割り込みで消されなかった合成済み wav）と wav キャッシュのクリアを行う |
 
 ---
@@ -83,13 +85,28 @@ vvread say "急ぎ発話" --queue --speed 2.0   # キューモードでも1エ�
 
 ---
 
+## メニューバー UI（macOS のみ）
+
+| コマンド | 説明 |
+|---|---|
+| `vvread menubar` | rumps 製メニューバー常駐アプリを起動。状態表示・読み上げ/キューモードのトグル・一時ミュート・現在再生中を停止・キューをクリア・デフォルト設定(話者/音量/スピード/抑揚/句読点ポーズ/最大チャンク数)切替をメニューから操作。全操作は `vvread` サブプロセス呼び出しに一本化（状態ファイルを直接書かない） |
+
+- **macOS 専用**。他 OS では案内メッセージ付き `exit 1`。
+- 二重起動は拒否される（`vvread menubar は既に起動中です (pid=N)`）。
+- rumps 未導入時は導入コマンド（`uv sync`）を案内して終了する。
+- ポーリング間隔は既定 2 秒。`VVREAD_MENUBAR_INTERVAL`（秒、1〜60 に clamp）で変更可能。
+- Python 解決は `VVREAD_MENUBAR_PYTHON` env → `.venv/bin/python`（rumps import 可否で判定）。
+- メニュー構成・操作の説明は [`README.md`](README.md) の「7. メニューバー UI（macOS、任意）」を参照。
+
+---
+
 ## セットアップ & hook
 
 | コマンド | 説明 |
 |---|---|
-| `vvread setup [--yes]` | 対話セットアップ（engine 疎通確認 + e2k + Claude hook 登録） |
+| `vvread setup [--yes] [--with-menubar\|--skip-menubar]` | 対話セットアップ（engine 疎通確認 + e2k + Claude hook 登録 + menubar 自動起動〔任意・macOS〕） |
 | `vvread install [--scope SCOPE] [--yes] [--dry-run]` | Claude Code hook を対話式（TTY）または `--yes` で非対話登録 |
-| `vvread uninstall [--scope SCOPE]` | hook を解除 |
+| `vvread uninstall [--scope SCOPE] [--with-menubar]` | hook を解除。`--with-menubar` でログイン時自動起動 LaunchAgent も解除（macOS のみ） |
 | `vvread speakers` | VOICEVOX Engine から利用可能な speaker/style ID 一覧を表示 |
 | `vvread config [--set KEY=VALUE] [--json '{...}'] [--user-setting] [--list] [--create] [--dry-run]` / `vvread edit` | `vvread.settings.json` を編集。デフォルトは対話式（TTY 必須）。`--set`/`--json` で TTY 不要の非対話モードに切り替わる。`--user-setting` でユーザースコープのファイルを対象にする |
 | `vvread doctor [--offline]` | ヘルスチェック |

@@ -3,7 +3,8 @@
 #
 # scripts/hook_install.py を Python で起動するだけの薄いラッパー。
 # venv の python を優先して使い、無ければ system python3 にフォールバック。
-# 引数はそのまま透過(--scope / --dry-run)。
+# 引数はそのまま透過(--scope / --dry-run / --with-menubar)。
+# --with-menubar: ユーザー全体の LaunchAgent(ログイン時自動起動)も解除する(B-156)。
 #
 # entry script (R-026): set -euo pipefail / Bash 3.2 互換 / shellcheck warning ゼロ。
 

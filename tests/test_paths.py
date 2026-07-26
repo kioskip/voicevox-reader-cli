@@ -351,6 +351,20 @@ class TestMigrateLegacyTmp:
         assert (legacy / "mute_until").exists()
         assert (legacy / "last_notify").exists()
 
+    def test_migrated_state_dir_has_0700_permissions(self, migrate_setup):
+        """L-4: 新規作成される state ディレクトリは umask 077 で 0700 になる
+        (共有ホストで他ユーザーに読まれないようにするための回帰テスト)。"""
+        legacy = migrate_setup["legacy"]
+        (legacy / "disabled").touch()
+
+        result = run_migrate(migrate_setup["env"], str(legacy))
+        assert result.returncode == 0, result.stderr
+
+        state = migrate_setup["state"]
+        assert state.is_dir()
+        mode = state.stat().st_mode & 0o777
+        assert mode == 0o700, f"state dir mode expected 0700, got {oct(mode)}"
+
     def test_does_not_overwrite_existing_state_file(self, migrate_setup):
         """新側に既存があれば上書きしない(後勝ちの事故を防ぐ)"""
         legacy = migrate_setup["legacy"]

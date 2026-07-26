@@ -364,10 +364,12 @@ class TestRunSetup:
             skip_engine=True, skip_e2k=True, skip_hook=True, skip_mcp=True,
         )
         results = setup_mod.run_setup(ctx)
-        # receiver は --with-receiver 未指定で SKIPPED（opt-in 専用）
-        assert len(results) == 5
+        # receiver / menubar は --with-* 未指定で SKIPPED（opt-in 専用）
+        assert len(results) == 6
         assert all(r.status == setup_mod.STATUS_SKIPPED for r in results)
-        assert [r.step for r in results] == ["engine", "e2k", "hook", "mcp", "receiver"]
+        assert [r.step for r in results] == [
+            "engine", "e2k", "hook", "mcp", "receiver", "menubar",
+        ]
 
     def test_engine_error_skips_following_steps(self, tmp_path):
         """engine が ERROR(unreachable URL)→ e2k/hook は連鎖防止で SKIPPED"""
@@ -794,3 +796,246 @@ class TestStepReceiver:
         assert r.status == setup_mod.STATUS_OK
         assert "dry-run" in r.message
         assert calls == [], f"dry-run で runner が呼ばれた: {calls}"
+
+
+# ---------------------------------------------------------------------------
+# step_menubar テスト (B-156)
+# ---------------------------------------------------------------------------
+
+
+def _fake_register_result(**overrides):
+    base = dict(
+        ok=True, rumps_available=True, changed=True, action="install",
+        plist_path=Path("/fake/home/Library/LaunchAgents/com.vvread.menubar.plist"),
+        message="installed menubar LaunchAgent at /fake/plist",
+        dry_run=False, error=None,
+    )
+    base.update(overrides)
+    return setup_mod._la.RegisterResult(**base)
+
+
+class TestStepMenubar:
+    def test_non_macos_returns_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup_mod.platform, "system", lambda: "Linux")
+        ctx, *_ = _make_ctx(tmp_path, yes=True, with_menubar=True)
+        r = setup_mod.step_menubar(ctx)
+        assert r.status == setup_mod.STATUS_SKIPPED
+        assert "not macOS" in r.message
+
+    def test_skip_menubar_returns_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup_mod.platform, "system", lambda: "Darwin")
+        ctx, *_ = _make_ctx(tmp_path, yes=True, skip_menubar=True)
+        r = setup_mod.step_menubar(ctx)
+        assert r.status == setup_mod.STATUS_SKIPPED
+        assert "--skip-menubar" in r.message
+
+    def test_yes_only_returns_skipped(self, tmp_path, monkeypatch):
+        """--yes 単体（--with-menubar なし）は即スキップ（opt-in 必要）"""
+        monkeypatch.setattr(setup_mod.platform, "system", lambda: "Darwin")
+        ctx, *_ = _make_ctx(tmp_path, yes=True)
+        r = setup_mod.step_menubar(ctx)
+        assert r.status == setup_mod.STATUS_SKIPPED
+        assert "with-menubar" in r.message
+
+    def test_skip_and_with_menubar_mutually_exclusive_is_error(self, tmp_path):
+        """skip_menubar と with_menubar の同時指定は ERROR(相互排他)"""
+        ctx, *_ = _make_ctx(tmp_path, yes=True, skip_menubar=True, with_menubar=True)
+        r = setup_mod.step_menubar(ctx)
+        assert r.status == setup_mod.STATUS_ERROR
+        assert "mutually exclusive" in r.message
+
+    def test_with_menubar_forces_registration(self, tmp_path, monkeypatch):
+        """--with-menubar なら --yes 単体でも強制的に登録処理へ進む"""
+        monkeypatch.setattr(setup_mod.platform, "system", lambda: "Darwin")
+        captured = {}
+
+        def fake_register(**kwargs):
+            captured.update(kwargs)
+            return _fake_register_result()
+
+        ctx, cwd, home, fake_repo = _make_ctx(tmp_path, yes=True, with_menubar=True)
+        monkeypatch.setattr(setup_mod._la, "register", fake_register)
+        r = setup_mod.step_menubar(ctx)
+        assert r.status == setup_mod.STATUS_OK
+        assert captured["repo_root"] == fake_repo
+        assert captured["home"] == home
+        assert captured["dry_run"] is False
+
+    def test_interactive_default_is_yes(self, tmp_path, monkeypatch):
+        """対話モードでは default=Yes（他 step と異なり既定で有効にする）"""
+        monkeypatch.setattr(setup_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(setup_mod._la, "register", lambda **kw: _fake_register_result())
+
+        ctx, *_ = _make_ctx(tmp_path, yes=False, with_menubar=False, in_text="\n")
+        r = setup_mod.step_menubar(ctx)
+        assert r.status == setup_mod.STATUS_OK
+
+    def test_interactive_no_skips_menubar(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup_mod.platform, "system", lambda: "Darwin")
+        calls = []
+        monkeypatch.setattr(
+            setup_mod._la, "register",
+            lambda **kw: calls.append(kw) or _fake_register_result(),
+        )
+
+        ctx, *_ = _make_ctx(tmp_path, yes=False, with_menubar=False, in_text="n\n")
+        r = setup_mod.step_menubar(ctx)
+        assert r.status == setup_mod.STATUS_SKIPPED
+        assert calls == []
+
+    def test_rumps_unavailable_returns_warn(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(
+            setup_mod._la, "register",
+            lambda **kw: _fake_register_result(
+                ok=False, rumps_available=False, changed=False,
+                action="rumps_unavailable",
+                message="rumps not available; menubar auto-start not registered",
+            ),
+        )
+        ctx, *_ = _make_ctx(tmp_path, yes=True, with_menubar=True)
+        r = setup_mod.step_menubar(ctx)
+        assert r.status == setup_mod.STATUS_WARN
+        assert "rumps" in r.message.lower()
+        assert r.hint  # uv sync 案内が入っている
+
+    def test_dry_run_forwarded_to_register(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup_mod.platform, "system", lambda: "Darwin")
+        captured = {}
+
+        def fake_register(**kwargs):
+            captured.update(kwargs)
+            return _fake_register_result(
+                dry_run=True, message="[dry-run] would install menubar LaunchAgent",
+            )
+
+        monkeypatch.setattr(setup_mod._la, "register", fake_register)
+        ctx, *_ = _make_ctx(tmp_path, yes=True, with_menubar=True, dry_run=True)
+        r = setup_mod.step_menubar(ctx)
+        assert r.status == setup_mod.STATUS_OK
+        assert "[dry-run]" in r.message
+        assert captured["dry_run"] is True
+
+    def test_register_error_returns_warn(self, tmp_path, monkeypatch):
+        """bootstrap 失敗等の register エラーは WARN で継続(setup 全体は止めない)"""
+        monkeypatch.setattr(setup_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(
+            setup_mod._la, "register",
+            lambda **kw: _fake_register_result(
+                ok=False, changed=False, action="error",
+                message="launchctl bootstrap exit 1", error="boom",
+            ),
+        )
+        ctx, *_ = _make_ctx(tmp_path, yes=True, with_menubar=True)
+        r = setup_mod.step_menubar(ctx)
+        assert r.status == setup_mod.STATUS_WARN
+
+    def test_register_error_hint_quotes_path_with_spaces(self, tmp_path, monkeypatch):
+        """plist_path にスペースが含まれる場合(home dir が空白を含む等)、
+        手動復旧案内の hint はコピペ実行できるよう shlex.quote で
+        引用符が付与される(doctor.py の chmod hint と同じパターン)。"""
+        monkeypatch.setattr(setup_mod.platform, "system", lambda: "Darwin")
+        plist_with_spaces = Path(
+            "/fake/home dir/Library/LaunchAgents/com.vvread.menubar.plist"
+        )
+        monkeypatch.setattr(
+            setup_mod._la, "register",
+            lambda **kw: _fake_register_result(
+                ok=False, changed=False, action="error",
+                message="launchctl bootstrap exit 1", error="boom",
+                plist_path=plist_with_spaces,
+            ),
+        )
+        ctx, *_ = _make_ctx(tmp_path, yes=True, with_menubar=True)
+        r = setup_mod.step_menubar(ctx)
+        assert r.status == setup_mod.STATUS_WARN
+        expected_quoted = setup_mod.shlex.quote(str(plist_with_spaces))
+        # 前提: このテストのパスは実際にスペースを含み、クォートが必要
+        assert expected_quoted != str(plist_with_spaces)
+        assert expected_quoted in r.hint
+
+
+# ---------------------------------------------------------------------------
+# rumps (B-151 menubar UI) 導入案内: _check_rumps_installed / status summary
+# ---------------------------------------------------------------------------
+#
+# rumps はコア依存 (pyproject `sys_platform=='darwin'` marker) なので専用の
+# install step は持たない。冒頭の状態サマリ(_get_setup_status /
+# _print_setup_status)に導入状況を表示するだけの「案内統合」であることを
+# 固定する。macOS 以外では表示自体を出さない(marker により常に未導入の
+# はずで、案内しても意味が無いため)。
+
+
+class TestCheckRumpsInstalled:
+    def test_true_when_venv_python_import_succeeds(self, tmp_path):
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        venv_python = venv_bin / "python"
+        venv_python.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n")
+        venv_python.chmod(0o755)
+        assert setup_mod._check_rumps_installed(venv_python) is True
+
+    def test_false_when_venv_python_missing(self, tmp_path):
+        venv_python = tmp_path / ".venv" / "bin" / "python"
+        # venv_python を作らない → not found 経路
+        assert setup_mod._check_rumps_installed(venv_python) is False
+
+    def test_false_when_import_fails(self, tmp_path):
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        venv_python = venv_bin / "python"
+        venv_python.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n")
+        venv_python.chmod(0o755)
+        assert setup_mod._check_rumps_installed(venv_python) is False
+
+
+class TestSetupStatusSummaryRumps:
+    def test_macos_status_includes_rumps_field(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup_mod.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(setup_mod, "_check_rumps_installed", lambda _: True)
+        monkeypatch.setattr(setup_mod, "_check_e2k_installed", lambda _: False)
+
+        # engine_url を明示的に unreachable な固定ポートにして実ネットワーク
+        # 依存を排除する(TestStepEngine.test_unreachable_url_errors と同じ手法)
+        ctx, *_ = _make_ctx(tmp_path, yes=True, engine_url="http://127.0.0.1:1")
+        status = setup_mod._get_setup_status(ctx)
+        assert status["is_macos"] is True
+        assert status["rumps_installed"] is True
+
+    def test_non_macos_status_has_no_rumps_installed_value(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(setup_mod, "_check_e2k_installed", lambda _: False)
+
+        ctx, *_ = _make_ctx(tmp_path, yes=True, engine_url="http://127.0.0.1:1")
+        status = setup_mod._get_setup_status(ctx)
+        assert status["is_macos"] is False
+        assert status["rumps_installed"] is None
+
+    def test_print_status_shows_rumps_line_on_macos(self):
+        status = {
+            "engine_url": "http://127.0.0.1:50021",
+            "engine_info": None,
+            "e2k_installed": False,
+            "is_macos": True,
+            "rumps_installed": True,
+            "hook_scopes": {s: "not-registered" for s in hi.SCOPES},
+        }
+        out = io.StringIO()
+        setup_mod._print_setup_status(status, out)
+        text = out.getvalue()
+        assert "rumps" in text
+        assert "✓ installed" in text
+
+    def test_print_status_hides_rumps_line_on_non_macos(self):
+        status = {
+            "engine_url": "http://127.0.0.1:50021",
+            "engine_info": None,
+            "e2k_installed": False,
+            "is_macos": False,
+            "rumps_installed": None,
+            "hook_scopes": {s: "not-registered" for s in hi.SCOPES},
+        }
+        out = io.StringIO()
+        setup_mod._print_setup_status(status, out)
+        text = out.getvalue()
+        assert "rumps" not in text

@@ -75,6 +75,56 @@ class TestLogWrite:
         # ログファイルは作成されない(LOG_DIR は fixture が事前作成済)
         assert not (tmp_path / "logs" / "speak.log").exists()
 
+    def test_esc_sequence_is_stripped(self, env, tmp_path):
+        """L-3bash: ESC(\\x1b)を含むテキストがログに書かれても無害化される
+
+        (ANSI エスケープでのログ表示偽装対策)。"""
+        env.pop("VOICEVOX_LOG_FILE")
+        script = "esc=$'\\x1b'; log_info \"before${esc}[31mFAKE${esc}[0mafter\""
+        r = run_bash(env, script)
+        assert r.returncode == 0, r.stderr
+        log = tmp_path / "logs" / "speak.log"
+        content = log.read_text()
+        assert "\x1b" not in content, "ESC がログに残っている"
+        assert "before[31mFAKE[0mafter" in content
+
+    def test_c1_control_char_is_stripped(self, env, tmp_path):
+        """Codex レビュー指摘(C1 制御文字のすり抜け): U+009B(CSI)のような
+        UTF-8 2-byte C1 制御文字(\\xc2\\x9b)がログに書かれても無害化される。
+
+        ESC(\\x1b)のみの除去では U+009B を CSI と解釈する端末で ANSI 注入が
+        可能だったため、C1 の UTF-8 表現(\\xc2\\x80-\\xc2\\x9f)も除去する。
+        """
+        env.pop("VOICEVOX_LOG_FILE")
+        script = "c1=$'\\xc2\\x9b'; log_info \"before${c1}[31mFAKE${c1}[0mafter\""
+        r = run_bash(env, script)
+        assert r.returncode == 0, r.stderr
+        log = tmp_path / "logs" / "speak.log"
+        content_bytes = log.read_bytes()
+        assert b"\xc2\x9b" not in content_bytes, "C1 制御文字(U+009B)がログに残っている"
+        content = log.read_text()
+        assert "before[31mFAKE[0mafter" in content
+
+    def test_carriage_return_is_stripped(self, env, tmp_path):
+        """L-3bash: CR(\\r)を含むテキストがログ行を上書き偽装しないよう除去される。"""
+        env.pop("VOICEVOX_LOG_FILE")
+        script = "cr=$'\\r'; log_info \"real${cr}FAKE\""
+        r = run_bash(env, script)
+        assert r.returncode == 0, r.stderr
+        log = tmp_path / "logs" / "speak.log"
+        content = log.read_text()
+        assert "\r" not in content
+        assert "realFAKE" in content
+
+    def test_multibyte_japanese_text_preserved(self, env, tmp_path):
+        """制御文字除去は日本語などマルチバイト文字を壊さない。"""
+        env.pop("VOICEVOX_LOG_FILE")
+        r = run_bash(env, 'log_info "こんにちは世界"')
+        assert r.returncode == 0, r.stderr
+        log = tmp_path / "logs" / "speak.log"
+        content = log.read_text(encoding="utf-8")
+        assert "こんにちは世界" in content
+
 
 # ---------------------------------------------------------------------------
 # T-004: ローテーション

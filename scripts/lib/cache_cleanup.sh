@@ -20,7 +20,8 @@ _vvread_cache_cleanup() {
   local ttl_days="$1"
   local ttl_mins find_age count f
 
-  mkdir -p "${STATE_DIR}" 2>/dev/null || return 1
+  # L-4: 共有ホストで他ユーザーに読まれないよう umask 077 で新規作成する
+  ( umask 077; mkdir -p "${STATE_DIR}" ) 2>/dev/null || return 1
   [ -d "${CACHE_DIR}" ] || return 1
 
   ttl_mins=$(( ttl_days * 24 * 60 ))

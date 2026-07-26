@@ -31,7 +31,9 @@ source "${VVREAD_SCRIPTS_DIR}/lib/paths.sh"
 STATE_DIR="$(vvread_state_dir)"
 LOG_DIR="$(vvread_log_dir)"
 CACHE_DIR="$(vvread_cache_dir)"
-mkdir -p "${STATE_DIR}" "${LOG_DIR}" "${CACHE_DIR}"
+# L-4: 共有ホストで他ユーザーに読まれないよう umask 077 で新規作成する
+# (lib/queue.sh::vvread_queue_dirs_init と統一)。
+( umask 077; mkdir -p "${STATE_DIR}" "${LOG_DIR}" "${CACHE_DIR}" )
 
 # settings.py で設定を一括解決(env > project > user > default)
 # log.sh source より前に eval することで log.level も反映される
@@ -324,6 +326,21 @@ if [ "${QUEUE_MODE}" = "1" ]; then
   _text_preview="${_text_preview//$'\n'/ }"
   _text_preview="${_text_preview//$'\r'/}"
   _text_preview="${_text_preview//$'\t'/ }"
+  # L-3bash: TEXT は Stop hook 経由で Web 由来の untrusted 文字列が流入しうる。
+  # ANSI エスケープ等の制御文字を除去してログ偽装を防ぐ(秘密先頭文字の露出
+  # リスクも軽減)。`LC_ALL=C tr -d '[:cntrl:]'` は ASCII 制御バイト(C0 +
+  # 0x7F)しか除去できず、UTF-8 でエンコードされた C1 制御文字(U+0080-U+009F、
+  # 例: U+009B=CSI のバイト列 c2 9b)を通してしまう(Codex レビュー指摘)。
+  # unicodedata.category() の Cc 判定は Unicode コードポイント単位で C0/C1
+  # 両方を正しく判定できるため、argv 経由(sys.argv はサロゲートエスケープで
+  # デコードされ不正バイト列でも例外にならない)で Python に渡して除去する。
+  # 日本語等は Cc 以外のカテゴリなのでそのまま残る。
+  _text_preview="$("${PYTHON}" -c '
+import sys
+import unicodedata
+text = sys.argv[1]
+sys.stdout.write("".join(ch for ch in text if unicodedata.category(ch) != "Cc"))
+' "${_text_preview}" 2>/dev/null || true)"
   log_info "say enqueue source=${SAY_SOURCE} speaker=${SPEAKER} rc=${_submit_rc} text_chars=${#TEXT} text_from=${_text_preview}"
 
   # drainer になれれば drain、なれなければ既存 drainer に委ねて即終了。
