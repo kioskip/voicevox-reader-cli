@@ -492,6 +492,59 @@ class TestEnqueueLogFormat:
         log = self._read_log(tmp_path)
         self._assert_enqueue_line_is_single(log, "CRLF")
 
+    def test_text_from_strips_esc_sequence(self, voicevox_mock, tmp_path):
+        """L-3bash: TEXT に ESC(\\x1b)を含む ANSI エスケープが混入していても
+        text_from= に生の ESC が書かれない(Web 由来 untrusted テキストによる
+        ログ表示偽装対策)。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        _enable_queue(env)
+
+        r = run_say("\x1b[31mHello\x1b[0m", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        log = self._read_log(tmp_path)
+        assert "\x1b" not in log, "ESC がログに残っている"
+        self._assert_enqueue_line_is_single(log, "ESC")
+
+    def test_text_from_strips_c1_control_char(self, voicevox_mock, tmp_path):
+        """Codex レビュー指摘: TEXT に U+009B(CSI, UTF-8 では \\xc2\\x9b)のような
+        C1 制御文字が混入していても text_from= に生の C1 バイトが書かれない。
+
+        従来の `LC_ALL=C tr -d '[:cntrl:]'` は ASCII 制御バイト(C0 + 0x7F)しか
+        除去できず、UTF-8 でエンコードされた C1(U+0080-U+009F)を通していた。
+        """
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        _enable_queue(env)
+
+        r = run_say("\x9b[31mHello\x9b[0m", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        log_file = tmp_path / "log" / "speak.log"
+        log_bytes = log_file.read_bytes() if log_file.exists() else b""
+        assert b"\xc2\x9b" not in log_bytes, "C1 制御文字(U+009B)がログに残っている"
+        log = self._read_log(tmp_path)
+        self._assert_enqueue_line_is_single(log, "C1")
+
+    def test_text_from_preserves_japanese(self, voicevox_mock, tmp_path):
+        """制御文字除去は日本語などマルチバイト文字を壊さない(L-3bash)。"""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        make_fake_player(bin_dir, "afplay", exit_code=0)
+        env = _say_env(tmp_path, voicevox_mock["url"], bin_dir)
+        _enable_queue(env)
+
+        r = run_say("こんにちは世界", env_extra=env)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        log = self._read_log(tmp_path)
+        assert "text_from=こんにちは世界" in log
+
 
 # ---------------------------------------------------------------------------
 # drain play ログ（engine 情報）

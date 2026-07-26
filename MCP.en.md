@@ -249,15 +249,16 @@ HTTP response codes:
 |---|---|
 | 202 | Accepted (only guarantees the notification was written; **does not guarantee playback**) |
 | 400 | Empty body |
+| 403 | Origin header present, or Host outside the allowlist (see below) |
 | 405 | Non-POST method |
 | 413 | Body too large (over 16 KiB) |
 | 503 | Channel not connected (e.g. Claude Code not running) |
 
 ### Security & trust model
 
-- Event bodies are treated as **untrusted data**. The server's fixed `instructions` ensure Claude does not follow commands inside the body and does not execute commands, modify files, or reveal secrets. It only summarizes CI results, monitoring alerts, and completion notices.
+- Event bodies are treated as **untrusted data**. The server's fixed `instructions` ensure Claude does not follow commands inside the body and does not execute commands, modify files, or reveal secrets. It only summarizes CI results, monitoring alerts, and completion notices. Each notification body is wrapped in a random fence (`<<<VVREAD-DATA-{uuid}>>> ... <<<END-VVREAD-DATA-{uuid}>>>`) before being handed to the model, and content inside the fence is always treated as verbatim data (prompt-injection defense).
 - We recommend granting **only `mcp__vvread__vvread_say`**. Avoid blanket-granting `mcp__vvread__*`, which would include `vvread_config_set` (persistent setting changes).
-- The HTTP listener binds to **localhost (127.0.0.1) only**.
+- The HTTP listener binds to **localhost (127.0.0.1) only**. It also rejects, with 403, any request carrying an `Origin` header (browser-issued `fetch`/XHR always sends one) or whose `Host` header is anything other than `127.0.0.1` / `localhost` / `[::1]` (+ optional port). This closes off CSRF from a malicious web page and DNS-rebinding attacks against this endpoint. CLI clients such as `curl` normally do not send an `Origin` header, so they are unaffected.
 
 ### Current limitations
 
@@ -290,4 +291,4 @@ uv --version        # check if uv is installed
 
 ---
 
-For detailed setup instructions, see [`doc/01-setup.md`](../doc/01-setup.md).
+For detailed setup instructions, see [“3. Installation” in `README.en.md`](README.en.md#3-installation).

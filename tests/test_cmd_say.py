@@ -156,6 +156,29 @@ class TestArgsValidation:
         assert r.returncode == 1
         assert "--speaker requires" in r.stderr
 
+    def test_speaker_non_numeric_rejected(self, tmp_path):
+        """--speaker に非数値を渡すとエラー(Info: bash 層数値検証)。"""
+        r = run_say("hello", "--speaker", "abc", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "non-negative integer" in r.stderr
+
+    def test_speaker_negative_rejected(self, tmp_path):
+        """--speaker に負数を渡すとエラー。"""
+        r = run_say("hello", "--speaker", "-1", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "non-negative integer" in r.stderr
+
+    def test_speaker_empty_value_rejected(self, tmp_path):
+        r = run_say("hello", "--speaker=", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "non-negative integer" in r.stderr
+
+    def test_speaker_equals_non_numeric_rejected(self, tmp_path):
+        """--speaker=N 形式でも同様に非数値を拒否する。"""
+        r = run_say("hello", "--speaker=abc", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "non-negative integer" in r.stderr
+
     def test_help_flag(self, tmp_path):
         r = run_say("-h", env_extra=_path_env(tmp_path))
         assert r.returncode == 1

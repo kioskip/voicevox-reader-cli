@@ -18,6 +18,8 @@ vvread 経由の統合テストは tests/test_cmd_doctor.py 側。
 """
 import json
 import os
+import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -61,12 +63,16 @@ class TestCheckPaths:
         monkeypatch.setenv("VVREAD_LOG_DIR", str(tmp_path / "log"))
         monkeypatch.setenv("VVREAD_CACHE_DIR", str(tmp_path / "cache"))
         for sub in ("state", "log", "cache"):
-            (tmp_path / sub).mkdir()
+            # R-121: 0700 で明示作成(既定の mkdir() は umask 依存で 0755 等に
+            # なり得るため、新設の perm-WARN 判定を誤って踏まないようにする)。
+            (tmp_path / sub).mkdir(mode=0o700)
         items = doctor_mod.check_paths()
         labels = {(i.label, i.status) for i in items}
         assert ("state", "OK") in labels
         assert ("log", "OK") in labels
         assert ("cache", "OK") in labels
+        # 0700 なので他ユーザー可読の WARN は出ないはず
+        assert not any(i.label.endswith("_perm") for i in items)
 
     def test_missing_dirs_are_info(self, tmp_path, monkeypatch):
         monkeypatch.setenv("VVREAD_STATE_DIR", str(tmp_path / "no_state"))
@@ -77,6 +83,120 @@ class TestCheckPaths:
             i = _by_label(items, label)
             assert i.status == "INFO"
             assert "will be created" in i.detail
+
+    # -- R-121: 他ユーザー可読な既存ディレクトリの検出 -----------------------
+
+    def test_world_readable_dir_is_warn(self, tmp_path, monkeypatch):
+        """0755 相当(旧インストール)の state dir は {name}_perm WARN を出す"""
+        monkeypatch.setenv("VVREAD_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("VVREAD_LOG_DIR", str(tmp_path / "log"))
+        monkeypatch.setenv("VVREAD_CACHE_DIR", str(tmp_path / "cache"))
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(mode=0o700)
+        # chmod は umask の影響を受けず厳密にビットを設定できる
+        state_dir.chmod(0o755)
+        (tmp_path / "log").mkdir(mode=0o700)
+        (tmp_path / "cache").mkdir(mode=0o700)
+
+        items = doctor_mod.check_paths()
+
+        perm_items = {i.label: i for i in items if i.label.endswith("_perm")}
+        assert "state_perm" in perm_items
+        assert perm_items["state_perm"].status == "WARN"
+        assert "mode=755" in perm_items["state_perm"].detail
+        assert perm_items["state_perm"].hint is not None
+        assert "chmod 700" in perm_items["state_perm"].hint
+        # log / cache は 0700 のままなので perm WARN は出ない
+        assert "log_perm" not in perm_items
+        assert "cache_perm" not in perm_items
+
+    def test_hint_quotes_path_with_spaces(self, tmp_path, monkeypatch):
+        """パスにスペースが含まれる場合(macOS既定の "Application Support" 等)、
+        hint はそのままシェルにコピペしても word-split されないよう
+        shlex.quote で引用符が付与される。"""
+        state_dir = tmp_path / "state dir with spaces"
+        monkeypatch.setenv("VVREAD_STATE_DIR", str(state_dir))
+        monkeypatch.setenv("VVREAD_LOG_DIR", str(tmp_path / "log"))
+        monkeypatch.setenv("VVREAD_CACHE_DIR", str(tmp_path / "cache"))
+        state_dir.mkdir(mode=0o700, parents=True)
+        state_dir.chmod(0o755)
+        (tmp_path / "log").mkdir(mode=0o700)
+        (tmp_path / "cache").mkdir(mode=0o700)
+
+        items = doctor_mod.check_paths()
+
+        perm_items = {i.label: i for i in items if i.label.endswith("_perm")}
+        hint = perm_items["state_perm"].hint
+        assert hint is not None
+        expected_quoted = shlex.quote(str(state_dir))
+        # 前提: このテストのパスは実際にスペースを含み、クォートが必要
+        assert expected_quoted != str(state_dir)
+        assert hint == f"chmod 700 {expected_quoted}"
+
+    def test_0700_dir_has_no_perm_warn(self, tmp_path, monkeypatch):
+        """0700 は既に他ユーザーアクセス不可なので perm WARN は出ない"""
+        monkeypatch.setenv("VVREAD_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("VVREAD_LOG_DIR", str(tmp_path / "log"))
+        monkeypatch.setenv("VVREAD_CACHE_DIR", str(tmp_path / "cache"))
+        for sub in ("state", "log", "cache"):
+            (tmp_path / sub).mkdir(mode=0o700)
+
+        items = doctor_mod.check_paths()
+
+        assert not any(i.label.endswith("_perm") for i in items)
+
+    def test_windows_skips_perm_check(self, tmp_path, monkeypatch):
+        """Windows は POSIX permission bit の概念が薄いのでチェック自体を skip"""
+        monkeypatch.setenv("VVREAD_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("VVREAD_LOG_DIR", str(tmp_path / "log"))
+        monkeypatch.setenv("VVREAD_CACHE_DIR", str(tmp_path / "cache"))
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(mode=0o700)
+        state_dir.chmod(0o755)  # 世界可読でも Windows なら WARN が出ないはず
+        (tmp_path / "log").mkdir(mode=0o700)
+        (tmp_path / "cache").mkdir(mode=0o700)
+        monkeypatch.setattr(doctor_mod.platform, "system", lambda: "Windows")
+
+        items = doctor_mod.check_paths()
+
+        assert not any(i.label.endswith("_perm") for i in items)
+
+    def test_stat_failure_is_info_not_fatal(self, tmp_path, monkeypatch):
+        """TOCTOU 等で stat() が失敗しても例外を飛ばさず STATUS_INFO にする
+
+        Path.exists() / Path.is_dir() はどちらも内部で self.stat() を呼ぶため、
+        単純に Path.stat を常時 raise にすると exists() が False を返してしまい
+        perm チェック自体に到達しない(advisor 指摘の落とし穴)。ここでは対象
+        ディレクトリへの stat() 呼び出しを 3 回目以降だけ失敗させることで、
+        exists()/is_dir() (1, 2 回目) は成功させつつ、check_paths が明示的に
+        呼ぶ stat() (3 回目) だけを失敗させる。
+        """
+        monkeypatch.setenv("VVREAD_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("VVREAD_LOG_DIR", str(tmp_path / "no_log"))
+        monkeypatch.setenv("VVREAD_CACHE_DIR", str(tmp_path / "no_cache"))
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(mode=0o700)
+
+        orig_stat = Path.stat
+        victim = str(state_dir)
+        calls = {"n": 0}
+
+        def fake_stat(self, *a, **kw):
+            if str(self) == victim:
+                calls["n"] += 1
+                if calls["n"] <= 2:
+                    return orig_stat(self, *a, **kw)
+                raise PermissionError(13, "Permission denied")
+            return orig_stat(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "stat", fake_stat)
+
+        items = doctor_mod.check_paths()
+
+        state_perm = _by_label(items, "state_perm")
+        assert state_perm is not None
+        assert state_perm.status == "INFO"
+        assert "permission check failed" in state_perm.detail
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +245,26 @@ class TestCheckSettings:
         warns = [i for i in items if i.status == "WARN"
                  and i.label == "parse_error"]
         assert warns
+
+    def test_f123_project_engine_rejection_visible_as_warn(self, tmp_path):
+        """F-123: project 層の非ループバック engine 拒否が doctor の
+        settings セクションに WARN として明確に表示されること"""
+        proj = tmp_path / "vvread.settings.json"
+        proj.write_text(json.dumps({
+            "voicevox": {"engines": ["http://attacker.example:50021"]}
+        }))
+        s = settings_mod.load(
+            cwd=tmp_path, env={},
+            user_path=tmp_path / "u.json",
+            project_path=proj,
+        )
+        items = doctor_mod.check_settings(s)
+        warns = [i for i in items if i.status == "WARN"
+                 and i.label == "parse_error"]
+        assert any(
+            "非ループバック" in (i.detail or "") and "attacker.example" in (i.detail or "")
+            for i in warns
+        )
 
     def test_origin_displayed_in_detail(self, tmp_path):
         s = settings_mod.load(
@@ -256,8 +396,8 @@ class TestCheckDependencies:
         """optional が無くても WARN にしない(ユーザ仕様: 通常 doctor で warning 過多にしない)"""
         monkeypatch.setenv("PATH", str(tmp_path))
         items = doctor_mod.check_dependencies(scope="runtime")
-        # afplay / paplay / e2k 等の optional は INFO であるべき
-        for label in ("afplay", "paplay", "e2k"):
+        # afplay / paplay / e2k / rumps 等の optional は INFO であるべき
+        for label in ("afplay", "paplay", "e2k", "rumps"):
             i = _by_label(items, label)
             assert i is not None
             assert i.status == "INFO", \
@@ -266,6 +406,150 @@ class TestCheckDependencies:
     def test_unknown_scope_returns_error_item(self):
         items = doctor_mod.check_dependencies(scope="bogus")
         assert any(i.status == "ERROR" for i in items)
+
+
+class TestCheckDependenciesRumpsPlatform:
+    """rumps (B-151): macOS 専用機能。pyproject の `sys_platform == 'darwin'`
+    marker により非 macOS では uv sync でも導入されないため、OS 判定を先に
+    行い check_command を実行せず「対象外」の INFO を出す
+    (paths.py / settings.py と同じ `platform.system() == "Darwin"` 系統)。"""
+
+    def test_non_macos_reports_not_applicable(self, monkeypatch):
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        items = doctor_mod.check_dependencies(scope="runtime")
+        i = _by_label(items, "rumps")
+        assert i is not None
+        assert i.status == "INFO"
+        assert "not applicable" in (i.detail or "")
+
+    def test_macos_does_not_report_not_applicable(self, tmp_path, monkeypatch):
+        """macOS 判定時は「対象外」を出さず、通常の check_command 経路に進む。"""
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        monkeypatch.delenv("VVREAD_MENUBAR_PYTHON", raising=False)
+        # project_dir 無し(.venv 候補が無い)ので missing 経路(INFO)を安定再現
+        items = doctor_mod.check_dependencies(scope="runtime")
+        i = _by_label(items, "rumps")
+        assert i is not None
+        assert i.status == "INFO"
+        assert "not applicable" not in (i.detail or "")
+
+    def test_macos_with_project_dir_uses_venv_python(self, tmp_path, monkeypatch):
+        """project_dir 指定時は .venv/bin/python 経由で import 判定する
+        (R-009 別プロジェクト実行対応 + menubar.sh の解決順そのもの)。"""
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        monkeypatch.delenv("VVREAD_MENUBAR_PYTHON", raising=False)
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        fake_python = venv_bin / "python"
+        # "import rumps" が成功したことにする偽 python(shebang script)
+        fake_python.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n")
+        fake_python.chmod(0o755)
+
+        items = doctor_mod.check_dependencies(
+            scope="runtime", project_dir=tmp_path,
+        )
+        i = _by_label(items, "rumps")
+        assert i is not None
+        assert i.status == "OK"
+        assert str(fake_python) in (i.detail or "")
+
+
+# ---------------------------------------------------------------------------
+# _resolve_rumps_check (B-151 Codex レビュー指摘: menubar.sh と解決順を
+# 完全一致させる。VVREAD_MENUBAR_PYTHON → .venv、システム python3 なし)
+# ---------------------------------------------------------------------------
+
+
+def _write_fake_python(path: Path, exit_code: int) -> None:
+    """`[python, "-c", "import rumps"]` として呼ばれても exit_code を返すだけの
+    偽 python(shebang script)。実際の import は一切試みない。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/usr/bin/env python3\nimport sys\nsys.exit({exit_code})\n")
+    path.chmod(0o755)
+
+
+class TestResolveRumpsCheck:
+    """scripts/cmd/menubar.sh の Python 解決順(1. VVREAD_MENUBAR_PYTHON
+    2. project_dir/.venv/bin/python 3. NG)と doctor を一致させる回帰テスト。"""
+
+    def test_env_var_used_first(self, tmp_path, monkeypatch):
+        env_python = tmp_path / "env_python"
+        _write_fake_python(env_python, 0)
+        venv_python = tmp_path / "proj" / ".venv" / "bin" / "python"
+        _write_fake_python(venv_python, 0)
+        monkeypatch.setenv("VVREAD_MENUBAR_PYTHON", str(env_python))
+
+        result = doctor_mod._resolve_rumps_check(tmp_path / "proj")
+        assert result.found is True
+        assert result.path == str(env_python)
+
+    def test_env_var_import_failure_falls_back_to_venv(self, tmp_path, monkeypatch):
+        """VVREAD_MENUBAR_PYTHON が指す python で import が失敗した場合、
+        menubar.sh と同様に .venv へ進む(即 NG にしない)。"""
+        env_python = tmp_path / "env_python"
+        _write_fake_python(env_python, 1)  # import rumps 失敗を模す
+        venv_python = tmp_path / "proj" / ".venv" / "bin" / "python"
+        _write_fake_python(venv_python, 0)
+        monkeypatch.setenv("VVREAD_MENUBAR_PYTHON", str(env_python))
+
+        result = doctor_mod._resolve_rumps_check(tmp_path / "proj")
+        assert result.found is True
+        assert result.path == str(venv_python)
+
+    def test_env_var_nonexistent_path_falls_back_to_venv(self, tmp_path, monkeypatch):
+        venv_python = tmp_path / "proj" / ".venv" / "bin" / "python"
+        _write_fake_python(venv_python, 0)
+        monkeypatch.setenv("VVREAD_MENUBAR_PYTHON", str(tmp_path / "does_not_exist"))
+
+        result = doctor_mod._resolve_rumps_check(tmp_path / "proj")
+        assert result.found is True
+        assert result.path == str(venv_python)
+
+    def test_neither_candidate_available_is_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("VVREAD_MENUBAR_PYTHON", raising=False)
+        result = doctor_mod._resolve_rumps_check(tmp_path / "proj")  # .venv 無し
+        assert result.found is False
+        assert result.path is None
+
+    def test_no_project_dir_and_no_env_is_not_found(self, monkeypatch):
+        monkeypatch.delenv("VVREAD_MENUBAR_PYTHON", raising=False)
+        result = doctor_mod._resolve_rumps_check(None)
+        assert result.found is False
+
+    def test_never_falls_back_to_generic_dependency_check(self, tmp_path, monkeypatch):
+        """回帰防止の核心: rumps は `_deps.check()`(= システム PATH の
+        python3 経由)へ絶対にフォールバックしない。フォールバックすると
+        `python3` が voiceClaude 自身の .venv を指す開発環境で誤って
+        found=True になり、`vvread doctor` は OK なのに `vvread menubar` は
+        rumps not found で失敗する不整合が再発する。"""
+        monkeypatch.delenv("VVREAD_MENUBAR_PYTHON", raising=False)
+
+        def _must_not_be_called(dep):
+            raise AssertionError(
+                "_resolve_rumps_check must not fall back to _deps.check()"
+            )
+
+        monkeypatch.setattr(doctor_mod._deps, "check", _must_not_be_called)
+        result = doctor_mod._resolve_rumps_check(tmp_path / "proj")  # .venv 無し
+        assert result.found is False
+
+
+class TestCheckDependenciesRumpsHint:
+    """check_dependencies() の rumps NG 案内が menubar.sh の案内文言
+    (`uv sync` 実行を促す文言)と一致していること。"""
+
+    def test_ng_hint_matches_menubar_sh_wording(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        monkeypatch.delenv("VVREAD_MENUBAR_PYTHON", raising=False)
+        items = doctor_mod.check_dependencies(
+            scope="runtime", project_dir=tmp_path,  # .venv 無し → NG
+        )
+        i = _by_label(items, "rumps")
+        assert i is not None
+        assert i.status == "INFO"
+        assert i.hint == doctor_mod._RUMPS_INSTALL_HINT
+        assert "uv sync" in i.hint
+        assert "rumps package not found" in (i.detail or "")
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +566,36 @@ class TestCheckPlayer:
         # status の組のみ assertion(detect 結果に依存しない構造のみ確認)
         assert items
         assert items[0].section == "player"
+
+    def test_player_path_with_shell_metacharacters_no_injection(self, tmp_path, monkeypatch):
+        """L-3py 回帰: bash -c への f-string パス補間ではなく `$1` 引数渡しにより、
+        パスに `"` や `;` を含む悪意あるディレクトリ名でもコマンドインジェクションが
+        起きないこと。
+
+        旧実装(f'source "{lib_playback}" && ...')では、`w"; touch PWNED; echo "z`
+        のようなディレクトリ名を含むパスを埋め込むと、構築される bash コマンドが
+        `source "<...>/w"; touch PWNED; echo "z/lib/playback.sh" && vvread_detect_player`
+        に展開され、`touch PWNED` が実行されてしまう(この PoC は実際に旧実装で
+        PWNED が作成されることを個別に確認済み)。
+        """
+        marker = tmp_path / "PWNED"
+        weird_name = 'w"; touch PWNED; echo "z'
+        scripts_dir = tmp_path / weird_name
+        lib_dir = scripts_dir / "lib"
+        lib_dir.mkdir(parents=True)
+        (lib_dir / "playback.sh").write_text(
+            "vvread_detect_player() { printf '%s\\n' 'testplayer'; return 0; }\n"
+        )
+        # 万一注入された場合の touch 実行 cwd をこの tmp_path 配下に固定する
+        monkeypatch.chdir(tmp_path)
+
+        items = doctor_mod.check_player(scripts_dir=scripts_dir)
+
+        assert not marker.exists(), "path 経由でコマンドインジェクションが発生した(PWNED が作成された)"
+        i = _by_label(items, "detected")
+        assert i is not None
+        assert i.status == "OK"
+        assert i.detail == "testplayer"
 
 
 # ---------------------------------------------------------------------------

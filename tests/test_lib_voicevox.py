@@ -52,6 +52,11 @@ LOG_NAME=test
 LOG_DIR='{tmp_dir}/logs'
 mkdir -p "$LOG_DIR"
 source '{LIB_LOG}'
+# voicevox.sh は encoded=$("${{PYTHON}}" -c ...) を使う(Info: python3 直呼び解消、
+# uv 管理下の `${{PYTHON}}` 慣行に統一)。caller(cmd/say.sh, cmd/synth.sh)と
+# 同じ解決ロジックをここでも再現する。
+PYTHON="{REPO}/.venv/bin/python"
+[ -x "$PYTHON" ] || PYTHON="python3"
 source '{LIB_VOICEVOX}'
 
 voicevox_synthesize '{wav_path}' '{text}' '{speaker}' '{chunk_label}'
@@ -172,6 +177,8 @@ LOG_NAME=test
 LOG_DIR='{tmp_path}/logs'
 mkdir -p "$LOG_DIR"
 source '{LIB_LOG}'
+PYTHON="{REPO}/.venv/bin/python"
+[ -x "$PYTHON" ] || PYTHON="python3"
 source '{LIB_VOICEVOX}'
 SPEED_SCALE=9.9
 voicevox_synthesize '{wav}' 'テスト' '3' '1/1'
@@ -195,6 +202,8 @@ LOG_NAME=test
 LOG_DIR='{tmp_path}/logs'
 mkdir -p "$LOG_DIR"
 source '{LIB_LOG}'
+PYTHON="{REPO}/.venv/bin/python"
+[ -x "$PYTHON" ] || PYTHON="python3"
 source '{LIB_VOICEVOX}'
 voicevox_synthesize '{wav}' 'テスト' '3' '1/1'
 """

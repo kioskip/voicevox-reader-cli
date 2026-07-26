@@ -33,7 +33,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -77,6 +79,7 @@ class CheckItem:
 
 def check_paths(s: Optional[_settings.Settings] = None) -> List[CheckItem]:
     items: List[CheckItem] = []
+    is_windows = platform.system() == "Windows"
     for name, fn in (
         ("state", _paths.state_dir),
         ("log", _paths.log_dir),
@@ -99,6 +102,42 @@ def check_paths(s: Optional[_settings.Settings] = None) -> List[CheckItem]:
             section="paths", label=name,
             status=status, detail=detail,
         ))
+
+        # R-121: R-120 の umask 077 統一は新規作成ディレクトリのみに効くため、
+        # それ以前に作られた既存インストールの旧パーミッション(0755等)を
+        # 検出・警告する(共有ホストで他ユーザーに wav/log を読まれる懸念)。
+        # Windows は POSIX permission bit の概念が薄いためスキップ。
+        if exists and not is_windows:
+            if not p.is_dir():
+                # 通常ファイル等の異常系。致命的ではないので INFO に留める。
+                items.append(CheckItem(
+                    section="paths", label=f"{name}_perm",
+                    status=STATUS_INFO,
+                    detail=f"{p} exists but is not a directory",
+                ))
+            else:
+                try:
+                    st = p.stat()
+                except OSError as e:
+                    # TOCTOU(exists() 確認後に削除された等)や権限不足で
+                    # stat() 自体に失敗した場合。致命的ではないので INFO。
+                    items.append(CheckItem(
+                        section="paths", label=f"{name}_perm",
+                        status=STATUS_INFO,
+                        detail=f"permission check failed (non-fatal): {e}",
+                    ))
+                else:
+                    mode = st.st_mode & 0o077
+                    if mode != 0:
+                        items.append(CheckItem(
+                            section="paths", label=f"{name}_perm",
+                            status=STATUS_WARN,
+                            detail=(
+                                "other users can access this directory "
+                                f"(mode={oct(st.st_mode)[-3:]})"
+                            ),
+                            hint=f"chmod 700 {shlex.quote(str(p))}",
+                        ))
     # 設定ファイルパス (U-121: origin detail を [paths] セクションに統合)
     if s is not None and s.sources:
         for path_str in s.sources:
@@ -156,6 +195,52 @@ def check_settings(s: Optional[_settings.Settings] = None) -> List[CheckItem]:
 # section: dependencies (R-024)
 # ---------------------------------------------------------------------------
 
+# scripts/cmd/menubar.sh の NG 案内文と一致させる(B-151 Codex レビュー指摘)。
+# 表現を変えるときは両ファイルを同時に更新すること。
+_RUMPS_INSTALL_HINT = (
+    "uv sync  # pyproject.toml の sys_platform=='darwin' marker で "
+    "rumps がコア依存として自動解決されます(macOS のみ、追加 --extra 不要)"
+)
+
+
+def _resolve_rumps_check(project_dir: Optional[Path]) -> "_deps.CheckResult":
+    """rumps (B-151) の import 可否を scripts/cmd/menubar.sh の Python 解決順と
+    完全一致させて判定する:
+
+      1. VVREAD_MENUBAR_PYTHON 環境変数(明示指定。menubar.sh が最優先で見る)
+      2. project_dir/.venv/bin/python
+      3. どちらも無い/import 失敗 → NG
+
+    システム PATH 上の python3 への fallback は行わない(setup.py の
+    `_check_rumps_installed` を venv 限定にしたのと同じ理由: `python3` が
+    voiceClaude 自身の .venv を指す開発環境では常に成功してしまい、
+    「doctor は OK なのに menubar は rumps not found で失敗する」不整合を
+    起こすため。menubar.sh もシステム python3 は見ない)。
+    """
+    candidates: List[str] = []
+    env_python = os.environ.get("VVREAD_MENUBAR_PYTHON", "")
+    if env_python:
+        candidates.append(env_python)
+    if project_dir:
+        candidates.append(str(project_dir / ".venv" / "bin" / "python"))
+
+    for py in candidates:
+        py_path = Path(py)
+        if not py_path.is_file() or not os.access(py_path, os.X_OK):
+            continue
+        try:
+            proc = subprocess.run(
+                [str(py_path), "-c", "import rumps"],
+                capture_output=True,
+                timeout=5,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+        if proc.returncode == 0:
+            return _deps.CheckResult(name="rumps", found=True, path=str(py_path))
+
+    return _deps.CheckResult(name="rumps", found=False)
+
 
 def check_dependencies(scope: str = "runtime",
                        project_dir: Optional[Path] = None) -> List[CheckItem]:
@@ -167,8 +252,17 @@ def check_dependencies(scope: str = "runtime",
 
     project_dir が渡されている場合、install_hint 内の相対パス (.venv/bin/python)
     を絶対パスに変換する(R-009 別プロジェクト実行対応)。
+
+    rumps (B-151) は pyproject.toml の `sys_platform == 'darwin'` marker により
+    macOS 以外では uv sync でもインストールされない。非 macOS で「missing」扱い
+    にすると誤解を招くため、OS 判定を先に行い「対象外」の INFO を出して以降の
+    check_command 実行をスキップする(paths.py / settings.py と同じ
+    `platform.system() == "Darwin"` 系統で判定)。macOS 側の Python 解決順
+    (VVREAD_MENUBAR_PYTHON → .venv、システム python3 fallback なし)は
+    `_resolve_rumps_check()` を参照。scripts/cmd/menubar.sh と完全一致させる。
     """
     items: List[CheckItem] = []
+    is_macos = platform.system() == "Darwin"
 
     if scope == "runtime":
         deps = [d for d in _deps.DEPENDENCIES if d.category == "runtime"]
@@ -183,9 +277,26 @@ def check_dependencies(scope: str = "runtime",
         return items
 
     for d in deps:
-        # e2k の場合: project_dir が指定されていれば .venv/bin/python で check
-        # (デフォルトは system python3 を見ていたため R-009 対応)
-        if d.name == "e2k" and project_dir:
+        # rumps (B-151): macOS 専用機能。非 macOS では pyproject marker で
+        # そもそもインストールされないので、missing 扱いにせず「対象外」の
+        # INFO を出して check_command 実行自体をスキップする。
+        if d.name == "rumps" and not is_macos:
+            items.append(CheckItem(
+                section="dependencies", label=d.name,
+                status=STATUS_INFO,
+                detail="not applicable on this OS (macOS-only feature)",
+            ))
+            continue
+
+        if d.name == "rumps":
+            # menubar.sh と完全一致する解決順(VVREAD_MENUBAR_PYTHON → .venv)。
+            # システム python3 への fallback はしない(_resolve_rumps_check 参照)。
+            result = _resolve_rumps_check(project_dir)
+        elif d.name == "e2k" and project_dir:
+            # e2k の場合: project_dir が指定されていれば .venv/bin/python で
+            # check(デフォルトは system python3 を見ていたため R-009 対応。
+            # e2k は menubar.sh のような専用 launcher を持たないため、従来
+            # 通りシステム python3 への fallback を維持する)
             venv_python = project_dir / ".venv" / "bin" / "python"
             if venv_python.exists():
                 # .venv/bin/python で e2k import をテスト
@@ -226,7 +337,12 @@ def check_dependencies(scope: str = "runtime",
             else:
                 status = STATUS_INFO
             hint = None
-            if d.install_hint:
+            if d.name == "rumps":
+                # menubar.sh の NG 案内(uv sync)と一字一句揃える(Codex レビュー指摘)。
+                # 依存カタログ(dependencies.py)側の install_hint とは独立に、
+                # launcher と直接対応する文言をここで固定する。
+                hint = _RUMPS_INSTALL_HINT
+            elif d.install_hint:
                 # macOS / linux の優先順で 1 つ表示
                 for key in ("macos", "linux", "uv"):
                     if key in d.install_hint:
@@ -236,10 +352,13 @@ def check_dependencies(scope: str = "runtime",
                             abs_venv_python = project_dir / ".venv" / "bin" / "python"
                             hint = hint.replace(".venv/bin/python", str(abs_venv_python))
                         break
+            detail = f"missing  ({d.purpose})"
+            if d.name == "rumps":
+                detail = f"rumps package not found  ({d.purpose})"
             items.append(CheckItem(
                 section="dependencies", label=d.name,
                 status=status,
-                detail=f"missing  ({d.purpose})",
+                detail=detail,
                 hint=hint,
             ))
     return items
@@ -266,9 +385,14 @@ def check_player(scripts_dir: Optional[Path] = None) -> List[CheckItem]:
             detail=f"not found: {lib_playback}",
         )]
     try:
+        # L-3py: パスを f-string で bash -c スクリプトへ直接補間しない。
+        # `"` や `$(...)` を含むパス(悪意あるリポジトリ配置等)でコマンドが
+        # 注入されるのを防ぐため、`$1` 経由の引数渡しにする(パスは shell 展開
+        # の対象外になる)。
         r = subprocess.run(
             ["bash", "-c",
-             f'source "{lib_playback}" && vvread_detect_player'],
+             'source "$1" && vvread_detect_player',
+             "_", str(lib_playback)],
             capture_output=True, text=True, timeout=5,
         )
     except (subprocess.TimeoutExpired, OSError) as e:

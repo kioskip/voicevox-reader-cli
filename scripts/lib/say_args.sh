@@ -17,6 +17,17 @@
 #     グローバル変数 TEXT, SPEAKER_OVERRIDE, SPEED_OVERRIDE を設定して返す。
 #     バリデーション失敗時は exit 1（source = 同一プロセスなので caller を終了）。
 
+# --speaker の値検証。非負整数のみ許可(Info: bash 層数値検証の欠落対応)。
+# 不正値は stderr にエラーを出し exit 1 する(同一プロセス source 前提)。
+_vvread_say_validate_speaker() {
+  case "$1" in
+    ''|*[!0-9]*)
+      printf 'vvread say: --speaker must be a non-negative integer: %s\n' "$1" >&2
+      exit 1
+      ;;
+  esac
+}
+
 # say command shared helper — used by CLI arg parsing AND queue drain metadata validation
 _vvread_speed_normalize() {
   # Validate range 0.5–2.0 and canonicalize (01.0→1, 1.80→1.8) via %.6g
@@ -74,11 +85,13 @@ vvread_say_parse_args() {
           printf 'vvread say: --speaker requires an argument\n' >&2
           exit 1
         fi
+        _vvread_say_validate_speaker "$2"
         # shellcheck disable=SC2034
         SPEAKER_OVERRIDE="$2"
         shift 2
         ;;
       --speaker=*)
+        _vvread_say_validate_speaker "${1#--speaker=}"
         # shellcheck disable=SC2034
         SPEAKER_OVERRIDE="${1#--speaker=}"
         shift

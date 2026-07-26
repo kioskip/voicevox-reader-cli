@@ -174,6 +174,23 @@ DEPENDENCIES: List[Dependency] = [
             "pip": "pip install 'mcp>=1,<2'",
         },
     ),
+    Dependency(
+        name="rumps",
+        kind="optional",
+        category="runtime",
+        purpose="macOS メニューバー常駐 UI (vvread menubar サブコマンド, B-151)。"
+                "通常の vvread say / Stop hook 利用には不要。macOS 専用機能。",
+        check_command=["python3", "-c", "import rumps"],
+        fallback="`vvread menubar` が使用不可。CLI / Stop hook 等の通常機能には影響しない。"
+                 "macOS 以外ではそもそも対象外(pyproject の sys_platform=='darwin' marker "
+                 "により uv sync でもインストールされない)。",
+        install_hint={
+            "macos": "uv sync  # pyproject.toml の sys_platform=='darwin' marker で"
+                     "コア依存として自動解決(追加 --extra 不要)",
+        },
+        notes="macOS 専用(pyproject.toml でコア依存に `rumps>=0.4.0; sys_platform == "
+              "'darwin'` として宣言)。Linux/WSL では doctor 上「対象外」表示になる。",
+    ),
     # ---- setup: optional ----
     Dependency(
         name="jq",

@@ -19,7 +19,9 @@ VVREAD_SCRIPTS_DIR="${VVREAD_SCRIPTS_DIR:-${VVREAD_PROJECT_DIR}/scripts}"
 # shellcheck source=../lib/paths.sh
 source "${VVREAD_SCRIPTS_DIR}/lib/paths.sh"
 LOG_DIR="$(vvread_log_dir)"
-mkdir -p "${LOG_DIR}"
+# L-4: STATE/LOG/CACHE 系ディレクトリは umask 077 で新規作成し、共有ホストで
+# 他ユーザーに読まれないようにする(lib/queue.sh::vvread_queue_dirs_init と統一)。
+( umask 077; mkdir -p "${LOG_DIR}" )
 
 # settings.py で設定を一括解決(env > project > user > default)
 # log.sh source より前に eval することで log.level も反映される
@@ -64,6 +66,20 @@ EOF
 
 # ===== 引数 parse =====
 
+# --speaker の値検証。非負整数のみ許可(Codex レビュー指摘: cmd/say.sh 側
+# (lib/say_args.sh::_vvread_say_validate_speaker)にだけ検証を入れており、
+# synth.sh は独自パーサーのため未検証のまま speaker が audio_query/synthesis
+# URL に補間されていた)。say_args.sh は「lib 依存なし・say.sh 専用」を明言
+# しているため、共有 lib 化はせずロジックを同一のまま synth.sh 側にも複製する。
+_vvread_synth_validate_speaker() {
+  case "$1" in
+    ''|*[!0-9]*)
+      printf 'vvread synth: --speaker must be a non-negative integer: %s\n' "$1" >&2
+      exit 1
+      ;;
+  esac
+}
+
 TEXT=""
 OUTPUT=""
 SPEAKER_OVERRIDE=""
@@ -87,10 +103,12 @@ while [ $# -gt 0 ]; do
         printf 'vvread synth: --speaker requires an argument\n' >&2
         exit 1
       fi
+      _vvread_synth_validate_speaker "$2"
       SPEAKER_OVERRIDE="$2"
       shift 2
       ;;
     --speaker=*)
+      _vvread_synth_validate_speaker "${1#--speaker=}"
       SPEAKER_OVERRIDE="${1#--speaker=}"
       shift
       ;;

@@ -13,6 +13,33 @@ Dates use ISO 8601 (YYYY-MM-DD).
 
 ---
 
+## [0.4.4] - 2026-07-27
+
+### Added
+- **macOS メニューバー常駐 UI** (`vvread menubar`, B-151): rumps 採用。読み上げ on/off・ミュートのトグル、queue flush・残数表示（待機/再生中/失敗）、既定話者切り替えをメニューバーから操作できる。GUI は既存 CLI をサブプロセス経由で呼び出すだけの薄いアダプタで、CLI 契約層として `vvread unmute`（ミュートのみ解除）と `vvread status --json`（機械可読な1行状態出力）を新設した。
+- **メニューバーのログイン時自動起動** (B-156): `vvread setup` に menubar 用ステップを追加し、`vvread menubar` を LaunchAgent としてログイン時に自動起動できる。`vvread uninstall --with-menubar` で解除。
+- **メニューバー UI の再設計** (B-157): 状態表示を3色に統合（🟢稼働中 / 🟡ミュート中（解除予定時刻表示）/ 🔴停止中）。読み上げ・キューモードをチェックマーク付きトグルに変更。デフォルト設定サブメニューに音量・スピード・抑揚・句読点ポーズ・最大チャンク数の4項目を追加（既定話者と合わせて計6項目）し、選択肢に一致しない現在値は「現在値: X（選択肢外）」と表示する。
+
+### Changed
+- **`vvread off` / `vvread mute` が queue drainer も停止するように変更** (F-128): これまで `vvread stop` のみが queue 再生中の drainer に停止要求を送っていたが、`off`/`mute` 実行時も同様に停止するようになった（off/mute 中も drainer が動き続ける非対称を解消）。
+- **`vvread doctor` が既存インストールの緩いパーミッションを検出** (R-121): umask 077 統一（下記 Security 参照）は新規作成ディレクトリにのみ効くため、STATE/LOG/CACHE が旧パーミッションのまま残る既存インストール向けに、他ユーザー可読を検出し `chmod 700` を案内する警告を追加。
+
+### Fixed
+- **公開ミラーの dead link** (F-126): `publish/MCP.md` / `MCP.en.md` の `doc/` への参照が公開ミラーには存在せず dead link だった問題を修正し、公開ミラー内で完結する参照に差し替えた。
+- **メニューバー話者ラベルの重複キー** (F-127): 同名 speaker/style の組み合わせでラベルが完全一致すると `insert_before` が衝突しうる問題を、ラベルへの style id 付与で解消。
+
+### Security
+- **project settings 経由の非ループバック engine 差し替えを拒否** (F-123): 悪意ある project の `vvread.settings.json` が `voicevox.engines`/`engineUrl` を外部ホストへ差し替え、Claude 応答がゼロクリックで外部送信されうる問題を修正。project 層が指定する非ループバック engine を拒否し（該当 URL のみの部分拒否、全滅時は user→default へフォールバック）、`security.trustedProjectEngines`（user/env 限定の allowlist）で明示的に解除できる。
+- **機密マスクのカバレッジ拡張** (F-124): `_SECRET_RE` に全角セパレータ（`：`/`＝`）、AWS/Google/Slack のシークレット形式、JWT、PEM 秘密鍵ブロック、可変長 GitHub PAT (`ghp_`/`gho_`/`github_pat_`) を追加。あわせて keyword 分岐（`password:` 等）の値部区切りをスペース/タブに限定し、意図しない過剰マッチを軽減（日本語散文の過剰マスクという既知の課題自体は未解決、詳細は下記「既知の問題」参照）。
+- **ログの制御文字除去 + STATE/LOG/CACHE の umask 統一**: 信頼できないテキストのログプレビューが C0/C1 制御文字を除去せず書き込まれ ANSI エスケープでログ偽装されうる問題と、STATE/LOG/CACHE ディレクトリが default umask で作成され共有ホスト上で他ユーザーに読まれうる問題を修正（`umask 077` に統一）。
+- **vvread-receiver の CSRF/DNS rebinding 対策 + prompt injection 耐性向上** (B-153): `receiver/http.ts` に Origin ヘッダ必須化 + Host を loopback（`127.0.0.1`/`localhost`/`[::1]`）限定にするチェックを追加。受信した外部テキストはランダム生成フェンスで囲んで逐語データとして明示するよう instructions を変更。
+- **Low severity bugfix 束**: `voice.sh clean` がスペースを含むパスで word-split により誤って「removed N」と表示していた問題、`kill`/生存確認に `pid=0` ガードが欠けていた問題、`doctor.py` の `bash -c` 呼び出しにパス経由のコマンドインジェクション余地があった問題を修正。公開ミラーの秘密鍵検出（`.pem`/`.key`/`id_rsa*`/`.p12`/`.pfx`）と `vvread synth --speaker` の数値検証も追加。
+
+### 既知の問題
+- **機密マスクの日本語過剰マスク**（A-102）: `_SECRET_RE` の keyword 分岐が、空白を含まない日本語文で文末まで貪欲マッチし、該当文全体が「機密情報省略」化されることがある。fail-safe（過剰マスク）を fail-open（マスク漏れ）より優先する意図的なトレードオフとして次リリースへ持ち越し。
+
+---
+
 ## [0.4.3] - 2026-06-30
 
 ### Added

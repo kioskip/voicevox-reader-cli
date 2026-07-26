@@ -17,6 +17,9 @@
   - settings 書込みは hook_install._write_settings を import で再利用
     (atomic write + drift 防止)
   - --skip-engine / --skip-e2k / --skip-hook で部分実行(power user 用)
+  - rumps (B-151 menubar UI) はコア依存 (pyproject `sys_platform=='darwin'`
+    marker) なので `uv sync` だけで導入される。setup は専用の install step
+    を持たず、冒頭の状態サマリに導入状況を表示するだけ(macOS のみ)
 
 Exit code:
   0 = 全 step OK / WARN / SKIPPED
@@ -28,6 +31,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -83,6 +88,8 @@ class SetupContext:
     skip_mcp: bool = False
     with_mcp: bool = False
     with_receiver: bool = False
+    skip_menubar: bool = False
+    with_menubar: bool = False
     install_e2k: Optional[bool] = None  # None = 対話で聞く / True = 強制インストール / False = skip
     hook_scope: str = _hi.DEFAULT_SCOPE
     cwd: Path = field(default_factory=Path.cwd)
@@ -345,6 +352,29 @@ def _check_e2k_installed(venv_python: Path) -> bool:
     return e2k_found
 
 
+def _check_rumps_installed(venv_python: Path) -> bool:
+    """macOS 専用(B-151): voiceClaude の .venv 内に rumps が入っているか確認。
+
+    rumps は pyproject.toml のコア依存 (`sys_platform == 'darwin'` marker) な
+    ので、通常は `uv sync` だけで .venv に入る。menubar は .venv の python で
+    動かす前提のため、判定は venv_python 限定(e2k と異なりシステム python
+    fallback は持たない)。fallback を持たせると、`python3` が PATH 上で
+    voiceClaude 自身の .venv を指す開発環境(例: `uv run` 経由のテスト実行)
+    で venv 不在/import 失敗のケースを正しく検出できなくなるため。
+    """
+    if not venv_python.exists():
+        return False
+    try:
+        proc = subprocess.run(
+            [str(venv_python), "-c", "import rumps"],
+            capture_output=True,
+            timeout=5,
+        )
+        return proc.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # 現在状態サマリ（run_setup 冒頭で表示）
 # ---------------------------------------------------------------------------
@@ -366,6 +396,12 @@ def _get_setup_status(ctx: SetupContext) -> Dict[str, Any]:
     venv_python = project_dir / ".venv" / "bin" / "python"
     e2k_installed = _check_e2k_installed(venv_python)
 
+    # rumps (B-151, menubar UI): macOS 専用機能。非 macOS では pyproject の
+    # sys_platform=='darwin' marker によりそもそも導入対象外なので、案内
+    # 自体を出さない(is_macos=False のときは rumps_installed=None のまま)。
+    is_macos = platform.system() == "Darwin"
+    rumps_installed = _check_rumps_installed(venv_python) if is_macos else None
+
     hook_scopes: Dict[str, str] = {}
     for scope in _hi.SCOPES:
         path = _hi.resolve_settings_path(scope, cwd=ctx.cwd, home=ctx.home)
@@ -386,6 +422,8 @@ def _get_setup_status(ctx: SetupContext) -> Dict[str, Any]:
         "engine_url": url,
         "engine_info": engine_info,
         "e2k_installed": e2k_installed,
+        "is_macos": is_macos,
+        "rumps_installed": rumps_installed,
         "hook_scopes": hook_scopes,
     }
 
@@ -404,6 +442,11 @@ def _print_setup_status(status: Dict[str, Any], stream: Any) -> None:
 
     e2k_label = "✓ installed" if status["e2k_installed"] else "- not installed"
     stream.write(f"  e2k     {e2k_label}\n")
+
+    # rumps: macOS のみ表示(非 macOS ではそもそも対象外なので案内しない)
+    if status.get("is_macos"):
+        rumps_label = "✓ installed" if status["rumps_installed"] else "- not installed"
+        stream.write(f"  rumps   {rumps_label}  (menubar UI, `uv sync` で導入)\n")
 
     hook_scopes = status["hook_scopes"]
     parts = []
@@ -799,6 +842,7 @@ def step_mcp(ctx: SetupContext) -> StepResult:
 # --yes --with-receiver のみ確認省略。--dry-run は外部設定を書き換えない。
 
 import receiver_install as _ri  # noqa: E402
+import launch_agent as _la  # noqa: E402 (B-156, macOS-only)
 
 
 def _receiver_sdk_installed(receiver_dir: Path) -> bool:
@@ -934,12 +978,115 @@ def step_receiver(ctx: SetupContext) -> StepResult:
 
 
 # ---------------------------------------------------------------------------
+# step: menubar (B-156)
+# ---------------------------------------------------------------------------
+#
+# rumps 製 menubar UI (B-151) のログイン時自動起動(LaunchAgent)を登録する。
+# mcp/receiver と同じ opt-in 規約(--yes 単体では有効化しない)に従うが、
+# 対話プロンプトの既定値だけは他 step と異なり default=True にする
+# (「ログイン時に自動で立ち上がってほしい」が menubar 利用者の自然な期待の
+# ため。mcp/receiver は重い依存 / experimental 機能なので default=False)。
+# macOS 専用機能なので非 macOS では常に SKIPPED("not macOS")。
+
+
+def _resolve_menubar_log_dir(ctx: SetupContext) -> Path:
+    """LaunchAgent の StandardOutPath/StandardErrorPath に使う log dir を解決する。
+
+    paths.py の log_dir() と同じ優先順位(VVREAD_LOG_DIR env > OS 既定値)を
+    踏襲するが、OS 既定値の解決に実プロセスの $HOME ではなく ctx.home を使う
+    (テストで home を tmp_path に差し替えられるようにするため。menubar
+    LaunchAgent は macOS 専用機能なので macOS の既定値のみを使う)。
+    """
+    override = os.environ.get("VVREAD_LOG_DIR", "")
+    if override:
+        return Path(os.path.expanduser(override))
+    return ctx.home / "Library" / "Logs" / "vvread"
+
+
+def step_menubar(ctx: SetupContext) -> StepResult:
+    # 事前バリデーション: 相互排他(mcp/receiver は argparse のみで防ぐが、
+    # menubar は ctx を直接組み立てて呼ぶケース(テスト等)も守るため関数内でも
+    # 検証する)
+    if ctx.skip_menubar and ctx.with_menubar:
+        return StepResult(
+            step="menubar", status=STATUS_ERROR,
+            message="--skip-menubar and --with-menubar are mutually exclusive",
+        )
+
+    if platform.system() != "Darwin":
+        return StepResult(
+            step="menubar", status=STATUS_SKIPPED,
+            message="menubar step skipped (not macOS)",
+        )
+
+    if ctx.skip_menubar:
+        return StepResult(
+            step="menubar", status=STATUS_SKIPPED,
+            message="menubar step skipped (--skip-menubar)",
+        )
+
+    # --yes 単体は skip(opt-in が必要、mcp/receiver と同じ非対話規約)
+    if not ctx.with_menubar and ctx.yes:
+        return StepResult(
+            step="menubar", status=STATUS_SKIPPED,
+            message="menubar step skipped (use --with-menubar to enable)",
+        )
+
+    # 通常対話: default=Yes(他 step と異なり既定で有効にする)
+    if not ctx.with_menubar:
+        answer = _prompt_yes_no(
+            ctx, "Enable menubar auto-start on login? (optional)", default=True,
+        )
+        if not answer:
+            return StepResult(
+                step="menubar", status=STATUS_SKIPPED,
+                message="menubar step skipped",
+            )
+
+    repo_root = ctx.repo_root or SCRIPT_DIR.parent
+    runner = ctx.runner or _default_runner
+    log_dir = _resolve_menubar_log_dir(ctx)
+
+    result = _la.register(
+        repo_root=repo_root,
+        log_dir=log_dir,
+        home=ctx.home,
+        uid=os.getuid(),
+        runner=runner,
+        dry_run=ctx.dry_run,
+    )
+
+    if not result.rumps_available:
+        return StepResult(
+            step="menubar", status=STATUS_WARN,
+            message="rumps not installed; menubar auto-start not registered",
+            hint=_la._RUMPS_INSTALL_HINT,
+        )
+
+    if not result.ok:
+        return StepResult(
+            step="menubar", status=STATUS_WARN,
+            message=result.message,
+            detail=result.error,
+            hint=(
+                f"手動で確認/復旧: launchctl bootstrap gui/{os.getuid()} "
+                f"{shlex.quote(str(result.plist_path))}"
+            ),
+        )
+
+    return StepResult(
+        step="menubar", status=STATUS_OK,
+        message=result.message,
+    )
+
+
+# ---------------------------------------------------------------------------
 # orchestrator
 # ---------------------------------------------------------------------------
 
 
 def run_setup(ctx: SetupContext) -> List[StepResult]:
-    """3 step を順次実行。ERROR が出たら以降をスキップ(連鎖失敗を防ぐ)。"""
+    """6 step を順次実行。ERROR が出たら以降をスキップ(連鎖失敗を防ぐ)。"""
     # 対話モードかつ stdin が tty でない → ERROR
     pre = _require_tty_or_yes(ctx)
     if pre is not None:
@@ -953,7 +1100,7 @@ def run_setup(ctx: SetupContext) -> List[StepResult]:
     results: List[StepResult] = []
     abort = False
 
-    for step_fn in (step_engine, step_e2k, step_hook, step_mcp, step_receiver):
+    for step_fn in (step_engine, step_e2k, step_hook, step_mcp, step_receiver, step_menubar):
         if abort:
             results.append(StepResult(
                 step=step_fn.__name__.replace("step_", ""),
@@ -1038,6 +1185,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--with-receiver", action="store_true",
         help="set up receiver (Bun deps + local registration of vvread-receiver)",
     )
+    menubar_group = parser.add_mutually_exclusive_group()
+    menubar_group.add_argument(
+        "--skip-menubar", action="store_true",
+        help="skip the menubar auto-start (LaunchAgent) step",
+    )
+    menubar_group.add_argument(
+        "--with-menubar", action="store_true",
+        help="register menubar auto-start LaunchAgent (even with --yes), macOS only",
+    )
     parser.add_argument(
         "--install-e2k",
         action="store_true",
@@ -1084,6 +1240,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         skip_mcp=args.skip_mcp,
         with_mcp=args.with_mcp,
         with_receiver=args.with_receiver,
+        skip_menubar=args.skip_menubar,
+        with_menubar=args.with_menubar,
         install_e2k=install_e2k_explicit,
         hook_scope=args.scope,
         repo_root=repo_root,

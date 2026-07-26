@@ -1362,3 +1362,178 @@ class TestMaskSecrets:
         # sk- パターンは残っていない
         assert "sk-" not in result
         assert "[機密情報省略]" not in result  # mask_secrets は不要なため動かない
+
+
+class TestMaskSecretsF124:
+    """F-124: _SECRET_RE 強化(全角セパレータ / AWS / Google / Slack / JWT / PEM /
+    GitHub PAT 可変長化)の正例・負例テスト。"""
+
+    # ---- 全角セパレータ ----
+
+    def test_fullwidth_colon_password_masked(self):
+        """全角コロン(U+FF1A)区切りの password もマスクされる"""
+        result = sanitize.mask_secrets("password：hunter2")
+        assert "[機密情報省略]" in result
+        assert "hunter2" not in result
+
+    def test_fullwidth_equal_token_masked(self):
+        """全角イコール(U+FF1D)区切りの token もマスクされる"""
+        result = sanitize.mask_secrets("token＝abc123xyz")
+        assert "[機密情報省略]" in result
+
+    def test_normal_japanese_colon_sentence_unchanged(self):
+        """機密キーワードを含まない全角コロン文は誤検知しない(negative)"""
+        text = "値段：500円"
+        assert sanitize.mask_secrets(text) == text
+
+    # ---- AWS ----
+
+    def test_aws_access_key_masked(self):
+        result = sanitize.mask_secrets("AKIA" + "A" * 16 + " を使ってください")
+        assert "[機密情報省略]" in result
+        assert "AKIA" not in result
+
+    def test_aws_access_key_too_short_not_masked(self):
+        """AKIA + 15 文字(1 文字不足)は非マスク(negative、長さ境界確認)"""
+        text = "AKIA" + "A" * 15
+        assert sanitize.mask_secrets(text) == text
+
+    # ---- Google ----
+
+    def test_google_api_key_masked(self):
+        result = sanitize.mask_secrets("AIza" + "B" * 35)
+        assert "[機密情報省略]" in result
+
+    def test_google_api_key_prefix_only_not_masked(self):
+        """AIza だけ(本体無し)は非マスク(negative)"""
+        text = "AIza を使った実装"
+        assert sanitize.mask_secrets(text) == text
+
+    # ---- Slack ----
+
+    def test_slack_bot_token_masked(self):
+        result = sanitize.mask_secrets("xoxb-" + "1" * 12)
+        assert "[機密情報省略]" in result
+
+    def test_slack_like_word_not_masked(self):
+        """xox で始まるだけの通常語は非マスク(negative)"""
+        text = "xoxo という愛称"
+        assert sanitize.mask_secrets(text) == text
+
+    # ---- JWT ----
+
+    def test_jwt_three_segments_masked(self):
+        jwt = (
+            "eyJhbGciOiJIUzI1NiJ9"
+            ".eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+            ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        )
+        result = sanitize.mask_secrets(f"トークン: {jwt}")
+        assert "[機密情報省略]" in result
+        assert "eyJ" not in result
+
+    def test_jwt_single_segment_not_masked(self):
+        """1 セグメント単独(ドット無し)は非マスク(誤検知抑制、negative)"""
+        text = "eyJhbGciOiJIUzI1NiJ9"
+        assert sanitize.mask_secrets(text) == text
+
+    # ---- PEM 秘密鍵 ----
+
+    def test_pem_rsa_private_key_block_fully_masked(self):
+        """BEGIN〜END の PEM ブロック全体がマスクされる(本文も含む)"""
+        text = (
+            "-----BEGIN RSA PRIVATE KEY-----\n"  # gitleaks:allow
+            "MIIBOgIBAAJBAK...dummy...body...\n"
+            "-----END RSA PRIVATE KEY-----"
+        )
+        result = sanitize.mask_secrets(text)
+        assert result == "[機密情報省略]"
+
+    def test_pem_openssh_private_key_variant_masked(self):
+        result = sanitize.mask_secrets(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n"  # gitleaks:allow
+            "b3BlbnNzaC1rZXktdjEAAAAA...\n"
+            "-----END OPENSSH PRIVATE KEY-----"
+        )
+        assert "[機密情報省略]" in result
+
+    def test_pem_header_only_truncated_body_masked(self):
+        """END 行が無い(本文が途切れている)場合もヘッダ行はマスクされる(fallback)"""
+        text = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgk...(以下省略)"  # gitleaks:allow
+        result = sanitize.mask_secrets(text)
+        assert "[機密情報省略]" in result
+        assert "-----BEGIN PRIVATE KEY-----" not in result
+
+    def test_plain_text_mentioning_begin_not_masked(self):
+        """PEM ヘッダ形式でない「開始」等の通常文は非マスク(negative)"""
+        text = "会議はまもなく開始します。BEGIN と END で囲んでください。"
+        assert sanitize.mask_secrets(text) == text
+
+    # ---- GitHub PAT 可変長化 ----
+
+    def test_github_pat_classic_longer_than_36_masked(self):
+        """ghp_ は 36 文字固定ではなく可変長(36 以上)を許容する"""
+        ghp = "ghp_" + "A" * 50
+        result = sanitize.mask_secrets(ghp)
+        assert "[機密情報省略]" in result
+
+    def test_github_fine_grained_pat_shorter_than_82_masked(self):
+        """github_pat_ は 82 文字固定を緩和し 36 以上で反応する"""
+        pat = "github_pat_" + "C" * 40
+        result = sanitize.mask_secrets(pat)
+        assert "[機密情報省略]" in result
+
+
+class TestMaskSecretsA102:
+    """A-102: 当初は値部を ASCII 印字可能文字クラスに制限していたが、
+    `password: 秘密123` のような非ASCII秘密情報のマスク漏れという重大な
+    回帰を Codex レビューで指摘され撤回した。値部は \\S+ (Unicode 対応)の
+    ままにし、過剰マスクより秘密漏洩の防止(fail-safe)を優先する。
+    以下は撤回後の挙動を固定するテスト群。"""
+
+    def test_keyword_followed_by_japanese_sentence_now_fully_masked(self):
+        """(a', 撤回後の挙動) キーワード直後が空白なしの日本語文の場合、
+        \\S+ は非ASCIIにもマッチするため文全体(次の空白まで)がマスクされる。
+        これは過剰マスクだが、非ASCII秘密情報の非マスク漏れより安全側に倒す
+        意図的なトレードオフである。"""
+        text = "token: そのあとに続く日本語の説明文がここに書かれている"
+        result = sanitize.mask_secrets(text)
+        assert result == "[機密情報省略]"
+
+    def test_ascii_secret_glued_to_japanese_both_masked_together(self):
+        """(b', 撤回後の挙動) ASCII の secret 直後に空白なしで日本語が続く
+        場合、\\S+ が空白なしの全体(ASCII部分+日本語部分)を一つのトークンと
+        してマッチするため、まとめてマスクされる(部分マスクによる断片
+        漏洩を避ける)。"""
+        text = "token: abc123XYZこれは日本語です"
+        result = sanitize.mask_secrets(text)
+        assert result == "[機密情報省略]"
+
+    def test_password_with_non_ascii_value_fully_masked(self):
+        """(新規, 恒久回帰テスト) `password: 秘密123` のような非ASCII秘密情報
+        が完全にマスクされる(断片が一切残らない)ことを確認する。今回の
+        ASCII文字クラス制限による非マスク漏れ回帰を将来再発させないための
+        固定床。"""
+        result = sanitize.mask_secrets("password: 秘密123")
+        assert result == "[機密情報省略]"
+        assert "秘密123" not in result
+        assert "123" not in result
+
+    def test_long_ascii_secret_over_100_chars_fully_masked_no_fragment_leaks(self):
+        """(c, positive, 最重要) 100文字超の ASCII のみの secret は、長さキャップ
+        方式では末尾が平文で漏れうるが、ASCII文字クラス制限方式では長さに
+        関係なく最後まで貪欲マッチしフルマスクされ、断片が一切残らない"""
+        secret = "a" * 120
+        text = f"api_key: {secret}"
+        result = sanitize.mask_secrets(text)
+        assert result == "[機密情報省略]"
+        assert "a" * 20 not in result
+
+    def test_keyword_value_newline_next_line_japanese_not_masked(self):
+        """(d, negative) 1トークン目の後に改行を挟んで次の行に日本語が続く
+        場合、マスクは改行を跨がず、2行目の日本語は平文のまま残る"""
+        text = "password: secret1\nこれは次の行の日本語です"
+        result = sanitize.mask_secrets(text)
+        assert "[機密情報省略]" in result
+        assert "secret1" not in result
+        assert "これは次の行の日本語です" in result

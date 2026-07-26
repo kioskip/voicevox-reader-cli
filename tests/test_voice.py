@@ -13,13 +13,12 @@ VVREAD_*_DIR 環境変数で resolver の OS 既定値を上書きして呼び�
 
 旧 ${PROJECT_DIR}/tmp/ → 新 OS 別 dir への移行は test_paths.py で別途検証。
 """
+import json
 import os
 import shutil
 import subprocess
 import time
 from pathlib import Path
-
-import pytest
 
 import pytest
 
@@ -226,6 +225,35 @@ class TestVoiceClean:
         assert "voice.INFO" in content
         assert "clean files=1" in content
 
+    def test_removes_orphan_files_with_space_in_state_dir(self, project):
+        """STATE_DIR にスペースを含む場合でも実際に削除される(L-1 回帰テスト)。
+
+        macOS の既定 STATE_DIR は `~/Library/Application Support/vvread` で
+        スペースを含む。旧実装の `printf '%s\\n' "${matches}" | xargs rm -f`
+        は word-split によりスペース区切りで別引数化され、実際には何も
+        削除されないのに「removed N file(s)」と表示する機能バグがあった。
+        """
+        spaced_state = project["ROOT"] / "Application Support" / "vvread"
+        spaced_state.mkdir(parents=True)
+        (spaced_state / "voice_OLD_0.wav").write_bytes(b"")
+        (spaced_state / "voice_OLD_0.wav.query.json").write_text("{}")
+
+        base = os.environ.copy()
+        base["VVREAD_STATE_DIR"] = str(spaced_state)
+        base["VVREAD_LOG_DIR"] = str(project["LOG"])
+        base["VVREAD_CACHE_DIR"] = str(project["CACHE"])
+        r = subprocess.run(
+            [str(project["VOICE"]), "clean"],
+            env=base,
+            capture_output=True,
+            text=True,
+        )
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        assert "removed 2 file(s)" in r.stdout
+        assert not (spaced_state / "voice_OLD_0.wav").exists(), \
+            "スペース含み STATE_DIR で実削除されていない"
+        assert not (spaced_state / "voice_OLD_0.wav.query.json").exists()
+
 
 # ---------------------------------------------------------------------------
 # voice stop
@@ -289,6 +317,173 @@ class TestVoiceStop:
         assert r.returncode == 0
         assert not (state / "playing.pid").exists()
 
+    def test_pid_zero_is_not_killed(self, project):
+        """playing.pid が "0" に汚染されていても `kill 0`
+        (呼出側プロセスグループ全体への SIGTERM)を発行しない(L-2 回帰テスト)。
+
+        voice.sh を独立プロセスグループ(start_new_session)で起動し、ガードが
+        欠落していた場合の実害(自プロセスグループへの自傷 SIGTERM)を
+        テストランナーから隔離しつつ検出する: ガードが無いと voice.sh
+        自身が SIGTERM を受けて signal 起因の異常終了(returncode < 0)になる。
+        """
+        state = project["STATE"]
+        (state / "playing.pid").write_text("0")
+        (state / "session.id").write_text("ABC")
+
+        base = os.environ.copy()
+        base["VVREAD_STATE_DIR"] = str(project["STATE"])
+        base["VVREAD_LOG_DIR"] = str(project["LOG"])
+        base["VVREAD_CACHE_DIR"] = str(project["CACHE"])
+        r = subprocess.run(
+            [str(project["VOICE"]), "stop"],
+            env=base,
+            capture_output=True,
+            text=True,
+            start_new_session=True,
+            timeout=10,
+        )
+        assert r.returncode == 0, f"stderr={r.stderr} returncode={r.returncode}"
+        assert "stopped" in r.stdout
+        assert not (state / "playing.pid").exists()
+
+
+# ---------------------------------------------------------------------------
+# voice stop / mute / off × queue_mode 連携 (F-128)
+#
+# cmd_stop / cmd_mute / cmd_off は共通 helper `_queue_stop_if_active` を通じて
+# queue 全停止（pending 削除 + drainer への stop signal）を担う。判定基準は
+# `${STATE_DIR}/queue_mode` フラグ OR `${STATE_DIR}/queue` ディレクトリ存在の
+# OR 条件(per-call queue は queue_mode フラグを触らないため、フラグのみの
+# 判定だと per-call queue 使用中の停止要求が届かなくなる回帰があった)。
+# ここでは観測可能な副作用(ファイルの有無)でその挙動を検証する。
+# ---------------------------------------------------------------------------
+
+
+def _seed_queue_dirs(state):
+    """queue の pending/playing/failed ディレクトリを用意する。"""
+    for name in ("pending", "playing", "failed"):
+        (state / "queue" / name).mkdir(parents=True, exist_ok=True)
+
+
+class TestVoiceQueueStopIntegration:
+    @pytest.mark.parametrize("subcmd,args", [
+        ("stop", []),
+        ("mute", ["30s"]),
+        ("off", []),
+    ])
+    def test_clears_pending_when_queue_mode_active(self, project, subcmd, args):
+        """queue_mode フラグ ON + pending entry がある状態で stop/mute/off の
+        いずれを実行しても pending が削除される(vvread_queue_stop_request の
+        副作用)。"""
+        state = project["STATE"]
+        (state / "queue_mode").touch()
+        _seed_queue_dirs(state)
+        (state / "queue" / "pending" / "100_entry").write_text("pending")
+
+        r = run_voice(project, subcmd, *args)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        assert not (state / "queue" / "pending" / "100_entry").exists()
+
+    @pytest.mark.parametrize("subcmd,args", [
+        ("stop", []),
+        ("mute", ["30s"]),
+        ("off", []),
+    ])
+    def test_preserves_queue_mode_flag(self, project, subcmd, args):
+        """stop/mute/off は queue_mode フラグ自体を削除しない
+        (`vvread queue off` でのみ削除する既存の責務分担を維持する)。"""
+        state = project["STATE"]
+        (state / "queue_mode").touch()
+        _seed_queue_dirs(state)
+
+        r = run_voice(project, subcmd, *args)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        assert (state / "queue_mode").exists()
+
+    @pytest.mark.parametrize("subcmd,args", [
+        ("stop", []),
+        ("mute", ["30s"]),
+        ("off", []),
+    ])
+    def test_no_queue_processing_when_flag_and_dir_absent(self, project, subcmd, args):
+        """queue_mode フラグも queue ディレクトリも無ければ queue 処理
+        (vvread_queue_dirs_init 等)は走らない(OR 条件の両辺が偽の場合)。
+        フラグ・ディレクトリいずれも無い状態なら、queue ディレクトリが新規
+        作成されないことを確認する。"""
+        state = project["STATE"]
+        assert not (state / "queue_mode").exists()
+        assert not (state / "queue").exists()
+
+        r = run_voice(project, subcmd, *args)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        assert not (state / "queue").exists()
+
+    @pytest.mark.parametrize("subcmd,args", [
+        ("stop", []),
+        ("mute", ["30s"]),
+        ("off", []),
+    ])
+    def test_clears_pending_when_queue_dir_exists_without_flag(self, project, subcmd, args):
+        """per-call queue (`say --queue` / `VVREAD_SAY_QUEUE=1`) は queue_mode
+        フラグを一切触らずに queue ディレクトリだけを作る。OR 条件により、
+        フラグが無くても queue ディレクトリさえ存在すれば stop/mute/off で
+        pending が削除される(F-128 で `-d` → `-f` に変えた際の回帰の修正確認)。"""
+        state = project["STATE"]
+        assert not (state / "queue_mode").exists()
+        _seed_queue_dirs(state)
+        (state / "queue" / "pending" / "100_entry").write_text("pending")
+
+        r = run_voice(project, subcmd, *args)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+
+        assert not (state / "queue" / "pending" / "100_entry").exists()
+
+    @pytest.mark.parametrize("mute_args,expected_stderr", [
+        (["30x"], "duration"),  # duration の形式が不正
+        ([], "Usage"),          # 引数無し(既存の Usage エラー)
+    ])
+    def test_mute_invalid_duration_does_not_touch_queue(
+        self, project, mute_args, expected_stderr,
+    ):
+        """duration 不正 / 引数無しの早期 exit は queue 処理に一切触れない
+        (queue_mode があっても Usage / duration エラーで即 exit するパスは
+        変えていない)。"""
+        state = project["STATE"]
+        (state / "queue_mode").touch()
+        _seed_queue_dirs(state)
+        (state / "queue" / "pending" / "100_entry").write_text("pending")
+
+        r = run_voice(project, "mute", *mute_args)
+
+        assert r.returncode == 1
+        assert expected_stderr in r.stderr
+        # queue には一切触れていない: pending も queue_mode も無傷
+        assert (state / "queue" / "pending" / "100_entry").exists()
+        assert (state / "queue_mode").exists()
+
+    def test_wedge_warning_on_stop_when_queue_mode_active(self, project):
+        """queue_mode ON + wedge 状態の queue.lock がある場合、stop 実行時に
+        WARN が出る(判定基準を dir → queue_mode flag に変えても維持されること)。"""
+        state = project["STATE"]
+        (state / "queue_mode").touch()
+        _seed_queue_dirs(state)
+        (state / "queue" / "pending" / "100_entry").write_text("pending")
+        lock_dir = state / "queue" / "queue.lock"
+        lock_dir.mkdir()
+        # owner: 自プロセス(pytest)の pid を使い kill -0 を常に成功させる
+        (lock_dir / "owner").write_text(f"{os.getpid()}\t{os.getpid()}.1.1\n")
+        # hb / progress を古い epoch にして stale 扱いにする(wedge 判定)
+        (lock_dir / "hb").write_text("100\n")
+        (lock_dir / "progress").write_text("100\n")
+
+        r = run_voice(project, "stop")
+
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        assert "wedged" in r.stderr
+
 
 # ---------------------------------------------------------------------------
 # voice mute
@@ -341,6 +536,39 @@ class TestVoiceMute:
         assert r.returncode == 0
         new_session = (state / "session.id").read_text().strip()
         assert new_session.startswith("stopped_")
+
+
+# ---------------------------------------------------------------------------
+# voice unmute
+# ---------------------------------------------------------------------------
+
+
+class TestVoiceUnmute:
+    def test_removes_mute_until(self, project):
+        state = project["STATE"]
+        (state / "mute_until").write_text("9999999999")
+
+        r = run_voice(project, "unmute")
+
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        assert "ミュートを解除しました" in r.stdout
+        assert not (state / "mute_until").exists()
+
+    def test_preserves_disabled_flag(self, project):
+        state = project["STATE"]
+        (state / "disabled").touch()
+        (state / "mute_until").write_text("9999999999")
+
+        r = run_voice(project, "unmute")
+
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        assert (state / "disabled").exists()
+        assert not (state / "mute_until").exists()
+
+    def test_idempotent_without_mute_until(self, project):
+        r = run_voice(project, "unmute")
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        assert "ミュートを解除しました" in r.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +675,14 @@ class TestVoiceStatus:
         assert r.returncode == 0
         assert "state: idle" in r.stdout
 
+    def test_idle_when_pid_is_zero(self, project):
+        """playing.pid が "0" の場合 alive とみなさない(L-2 回帰テスト)。"""
+        state = project["STATE"]
+        (state / "playing.pid").write_text("0")
+        r = run_voice(project, "status")
+        assert r.returncode == 0
+        assert "state: idle" in r.stdout
+
     def test_disabled_takes_precedence_over_mute(self, project):
         # disabled と mute_until が両方あったら disabled が優先
         state = project["STATE"]
@@ -455,6 +691,125 @@ class TestVoiceStatus:
         r = run_voice(project, "status")
         assert r.returncode == 0
         assert "state: disabled" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# voice status --json
+# ---------------------------------------------------------------------------
+
+
+class TestVoiceStatusJson:
+    @staticmethod
+    def _load_result(r):
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        assert len(r.stdout.splitlines()) == 1
+        return json.loads(r.stdout)
+
+    def test_idle_with_missing_queue_directories(self, project):
+        r = run_voice(project, "status", "--json")
+
+        assert self._load_result(r) == {
+            "state": "idle",
+            "mute_until": None,
+            "queue": {
+                "mode": "off",
+                "pending": 0,
+                "playing": 0,
+                "failed": 0,
+            },
+        }
+        assert r.stdout == (
+            '{"state": "idle", "mute_until": null, '
+            '"queue": {"mode": "off", "pending": 0, '
+            '"playing": 0, "failed": 0}}\n'
+        )
+
+    def test_expired_mute_until_is_null_and_cleaned(self, project):
+        state = project["STATE"]
+        (state / "mute_until").write_text(str(int(time.time()) - 100))
+
+        r = run_voice(project, "status", "--json")
+
+        result = self._load_result(r)
+        assert result["state"] == "idle"
+        assert result["mute_until"] is None
+        assert r.stderr == ""
+        assert not (state / "mute_until").exists()
+
+    def test_invalid_mute_until_is_null_with_warning(self, project):
+        state = project["STATE"]
+        (state / "mute_until").write_text("not-an-epoch")
+
+        r = run_voice(project, "status", "--json")
+
+        result = self._load_result(r)
+        assert result["state"] == "idle"
+        assert result["mute_until"] is None
+        assert "警告" in r.stderr
+        assert "not-an-epoch" in r.stderr
+
+    def test_negative_mute_until_is_null_with_warning(self, project):
+        state = project["STATE"]
+        (state / "mute_until").write_text("-1")
+
+        r = run_voice(project, "status", "--json")
+
+        result = self._load_result(r)
+        assert result["mute_until"] is None
+        assert "警告" in r.stderr
+
+    def test_disabled_preserves_valid_mute_until_value(self, project):
+        state = project["STATE"]
+        future = int(time.time()) + 300
+        (state / "disabled").touch()
+        (state / "mute_until").write_text(str(future))
+
+        r = run_voice(project, "status", "--json")
+
+        result = self._load_result(r)
+        assert result["state"] == "disabled"
+        assert result["mute_until"] == future
+
+    def test_leading_zero_epoch_is_valid_json_number(self, project):
+        state = project["STATE"]
+        future = int(time.time()) + 300
+        (state / "mute_until").write_text(f"00{future}")
+
+        r = run_voice(project, "status", "--json")
+
+        result = self._load_result(r)
+        assert result["state"] == "muted"
+        assert result["mute_until"] == future
+
+    def test_stale_playing_pid_is_idle(self, project):
+        state = project["STATE"]
+        (state / "playing.pid").write_text("99999999")
+
+        r = run_voice(project, "status", "--json")
+
+        result = self._load_result(r)
+        assert result["state"] == "idle"
+
+    def test_queue_mode_and_valid_entry_counts(self, project):
+        state = project["STATE"]
+        (state / "queue_mode").touch()
+        for name in ("pending", "playing", "failed"):
+            (state / "queue" / name).mkdir(parents=True, exist_ok=True)
+        (state / "queue" / "pending" / "100_entry").write_text("pending")
+        (state / "queue" / "pending" / "ignored.tmp.1").write_text("temporary")
+        (state / "queue" / "playing" / "200_entry").write_text("playing")
+        (state / "queue" / "failed" / "300_entry").write_text("failed")
+        (state / "queue" / "failed" / "301_entry").write_text("failed")
+
+        r = run_voice(project, "status", "--json")
+
+        result = self._load_result(r)
+        assert result["queue"] == {
+            "mode": "on",
+            "pending": 1,
+            "playing": 1,
+            "failed": 2,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +825,7 @@ class TestVoiceUsage:
 
     def test_all_subcommands_appear_in_usage(self, project):
         r = run_voice(project)
-        for cmd in ("stop", "mute", "off", "on", "status", "clean"):
+        for cmd in ("stop", "mute", "unmute", "off", "on", "status", "clean"):
             assert cmd in r.stderr, f"usage に {cmd} が無い"
 
     def test_unknown_subcommand_shows_usage(self, project):

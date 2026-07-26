@@ -107,6 +107,31 @@ class TestArgsValidation:
         assert r.returncode == 1   # usage は exit 1(自前 exit 0 にすべきか議論あり、現状 1)
         assert "Usage: vvread synth" in r.stderr
 
+    def test_speaker_non_numeric_rejected(self, tmp_path):
+        """Codex レビュー指摘: cmd/say.sh と同じ非負整数検証を synth.sh 独自パーサーにも適用する。"""
+        r = run_synth("hello", "--output", str(tmp_path / "out.wav"),
+                      "--speaker", "abc", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "non-negative integer" in r.stderr
+
+    def test_speaker_negative_rejected(self, tmp_path):
+        r = run_synth("hello", "--output", str(tmp_path / "out.wav"),
+                      "--speaker", "-1", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "non-negative integer" in r.stderr
+
+    def test_speaker_empty_value_rejected(self, tmp_path):
+        r = run_synth("hello", "--output", str(tmp_path / "out.wav"),
+                      "--speaker=", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "non-negative integer" in r.stderr
+
+    def test_speaker_equals_non_numeric_rejected(self, tmp_path):
+        r = run_synth("hello", "--output", str(tmp_path / "out.wav"),
+                      "--speaker=abc", env_extra=_path_env(tmp_path))
+        assert r.returncode == 1
+        assert "non-negative integer" in r.stderr
+
 
 # ---------------------------------------------------------------------------
 # output 生成(VOICEVOX mock)

@@ -4,7 +4,7 @@ dispatcher の振り分け / help / unknown / PATH 経由実行(symlink chain)/
 空白を含むパスでの動作を中心に検証する。
 
 R-004 段階では say / on-stop / synth / play / install / uninstall /
-doctor / setup は未実装 stub。voice control 系(stop/mute/off/on/
+doctor / setup は未実装 stub。voice control 系(stop/mute/unmute/off/on/
 status/clean)は voice.sh への exec 委譲なので、stub と委譲の両系統
 について dispatch の正しさを fix する。
 
@@ -79,7 +79,7 @@ class TestHelp:
 
     def test_usage_lists_voice_control_subcommands(self):
         r = run_vvread("-h")
-        for cmd in ("stop", "mute", "off", "on", "status", "clean"):
+        for cmd in ("stop", "mute", "unmute", "off", "on", "status", "clean"):
             assert cmd in r.stderr, f"usage に {cmd} が無い"
 
     def test_usage_lists_planned_subcommands(self):
@@ -127,7 +127,7 @@ class TestStubs:
 
 
 class TestVoiceControlDispatch:
-    """vvread stop/mute/off/on/status/clean が voice.sh に正しく委譲される"""
+    """vvread stop/mute/unmute/off/on/status/clean が voice.sh に正しく委譲される"""
 
     def test_status_dispatches_to_voice_sh(self, tmp_path):
         r = run_vvread("status", env_extra=_path_env(tmp_path))
@@ -161,6 +161,20 @@ class TestVoiceControlDispatch:
         r = run_vvread("mute", "30x", env_extra=_path_env(tmp_path))
         assert r.returncode == 1
         assert "duration" in r.stderr
+
+    def test_unmute_dispatches_and_preserves_off_state(self, tmp_path):
+        env = _path_env(tmp_path)
+        state = Path(env["VVREAD_STATE_DIR"])
+        state.mkdir()
+        (state / "disabled").touch()
+        (state / "mute_until").write_text("9999999999")
+
+        r = run_vvread("unmute", env_extra=env)
+
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        assert "ミュートを解除しました" in r.stdout
+        assert (state / "disabled").exists()
+        assert not (state / "mute_until").exists()
 
     def test_clean_idempotent_on_empty_state(self, tmp_path):
         r = run_vvread("clean", env_extra=_path_env(tmp_path))

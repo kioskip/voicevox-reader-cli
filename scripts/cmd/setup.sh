@@ -4,8 +4,9 @@
 # scripts/setup.py を Python で起動するだけの薄いラッパー。
 # venv の python を優先して使い、無ければ system python3 にフォールバック。
 # 引数はそのまま透過(--engine / --engine-url / --scope / --yes / --dry-run /
-# --skip-engine / --skip-e2k / --skip-hook / --install-e2k / --no-install-e2k
-# / --json)。
+# --skip-engine / --skip-e2k / --skip-hook / --skip-mcp / --with-mcp /
+# --with-receiver / --skip-menubar / --with-menubar / --install-e2k /
+# --no-install-e2k / --json)。
 #
 # entry script (R-026): set -euo pipefail / Bash 3.2 互換 / shellcheck warning ゼロ。
 

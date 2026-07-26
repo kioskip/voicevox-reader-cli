@@ -9,6 +9,9 @@
 #
 # 呼び出し前提(同じ shell 内に存在していること):
 #   - lib_log.sh が source 済み(_now_ms / log_debug を使う)
+#   - PYTHON 変数が解決済み(uv 管理下では `${PYTHON}` を使う慣行。
+#     caller(cmd/say.sh, cmd/synth.sh)が venv python / python3 を解決してから
+#     本ファイルを source する。Info: voicevox.sh の python3 直呼びを解消)
 #
 # VOICEVOX_* 環境変数を関数内で直解決する。settings.py が canonical
 # (env > project > user > default)、ここは settings.py 失敗時の safety net。
@@ -34,7 +37,7 @@ voicevox_synthesize() {
   local _volume="${VOICEVOX_VOLUME:-1.0}"
   local _pause="${VOICEVOX_PAUSE_SCALE:-1.0}"
 
-  encoded=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "${text}") || {
+  encoded=$("${PYTHON}" -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "${text}") || {
     rm -f "${query_file}" "${tuned_file}"
     return 1
   }
